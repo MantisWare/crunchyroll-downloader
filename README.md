@@ -91,7 +91,7 @@ The binary is output to `bin/`. The `-s -w` flags strip debug symbols for a smal
    - **Chrome:** Application → Cookies
 3. Select the Crunchyroll domain and copy the `etp_rt` cookie value
 
-![](.github/screenshots/etp-rt-cookie.png)
+![etp_rt cookie location in Chrome DevTools](assets/Screenshot.png)
 
 ### Get a Widevine CDM
 
