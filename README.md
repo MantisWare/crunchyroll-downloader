@@ -54,6 +54,7 @@ crunchyroll-downloader/
 ├── http_request.go        # Shared HTTP client with 401 retry + token refresh
 ├── utils.go               # Language display name mapping
 ├── go.mod
+├── release.sh             # Tag + push release helper script
 ├── CHANGELOG.md
 └── README.md
 ```
@@ -232,14 +233,28 @@ All builds use `CGO_ENABLED=0` for fully static binaries with no external C depe
 
 ### Creating a Release
 
-Tag a commit and push the tag — the workflow builds all platforms, generates a SHA-256 checksum file, and creates a GitHub Release with auto-generated release notes:
+Use the release script — it validates the version, checks for uncommitted changes, verifies a CHANGELOG entry exists, then tags and pushes:
 
 ```bash
-git tag v1.3.0
-git push origin v1.3.0
+./release.sh 1.3.0
 ```
 
-The release will appear at `https://github.com/MantisWare/crunchyroll-downloader/releases/tag/v1.3.0` with all binaries and `checksums.txt` attached.
+The script will:
+1. Validate the semver format
+2. Ensure your working tree is clean
+3. Check that the tag doesn't already exist
+4. Verify `CHANGELOG.md` has a matching entry
+5. Show a summary and ask for confirmation
+6. Create an annotated git tag and push it to origin
+
+The push triggers GitHub Actions, which builds all platforms, generates a SHA-256 checksum file, and creates a GitHub Release with auto-generated release notes.
+
+You can also tag manually if you prefer:
+
+```bash
+git tag -a v1.3.0 -m "Release v1.3.0"
+git push origin v1.3.0
+```
 
 ### Build Locally
 
