@@ -5,13 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/iyear/gowidevine"
+	widevine "github.com/iyear/gowidevine"
 	"github.com/iyear/gowidevine/widevinepb"
 	"github.com/unki2aut/go-mpd"
 )
@@ -75,29 +76,52 @@ func sendChallenge(contentId, videoToken string, challenge []byte) ([]byte, erro
 }
 
 func getWidevineDevice() (*widevine.Device, error) {
-	execPath, _ := os.Executable()
-	execDir := filepath.Dir(execPath)
+	execPath, err := os.Executable()
+	if err != nil {
+		execPath = ""
+	}
+	if execPath != "" {
+		resolved, resolveErr := filepath.EvalSymlinks(execPath)
+		if resolveErr == nil {
+			execPath = resolved
+		}
+	}
 
-	searchDirs := []string{
-		".",
-		"assets",
-		filepath.Join(execDir, "assets"),
+	searchDirs := []string{"."}
+	cwd, _ := os.Getwd()
+
+	if execPath != "" {
+		execDir := filepath.Dir(execPath)
+		searchDirs = append(searchDirs, "assets", execDir, filepath.Join(execDir, "assets"))
+
+		// Also add absolute paths relative to cwd in case "." resolves differently
+		if cwd != "" {
+			searchDirs = append(searchDirs, filepath.Join(cwd, "assets"))
+		}
 	}
 
 	for _, dir := range searchDirs {
-		files, err := os.ReadDir(dir)
-		if err != nil {
+		absDir, _ := filepath.Abs(dir)
+		files, readErr := os.ReadDir(dir)
+		if readErr != nil {
 			continue
 		}
 
 		for _, file := range files {
 			if strings.HasSuffix(file.Name(), ".wvd") {
-				wvd, err := os.Open(filepath.Join(dir, file.Name()))
-				if err != nil {
-					return nil, err
+				wvdPath := filepath.Join(absDir, file.Name())
+				fmt.Printf("Found WVD file: %s\n", wvdPath)
+
+				wvd, openErr := os.Open(wvdPath)
+				if openErr != nil {
+					return nil, fmt.Errorf("opening WVD file %s: %w", wvdPath, openErr)
 				}
 
-				return widevine.NewDevice(widevine.FromWVD(io.NopCloser(wvd)))
+				device, devErr := widevine.NewDevice(widevine.FromWVD(io.NopCloser(wvd)))
+				if devErr != nil {
+					return nil, fmt.Errorf("parsing WVD file %s: %w", wvdPath, devErr)
+				}
+				return device, nil
 			}
 		}
 	}
@@ -114,15 +138,21 @@ func getWidevineDevice() (*widevine.Device, error) {
 		}
 	}
 
-	return nil, nil
+	searchedPaths := make([]string, 0, len(searchDirs))
+	for _, dir := range searchDirs {
+		abs, _ := filepath.Abs(dir)
+		searchedPaths = append(searchedPaths, abs)
+	}
+	return nil, fmt.Errorf("no WVD file found. Searched directories:\n  %s", strings.Join(searchedPaths, "\n  "))
 }
 
 func getLicense(psshData, contentId, videoToken string) error {
 	device, err := getWidevineDevice()
+	if err != nil {
+		return fmt.Errorf("widevine device: %w", err)
+	}
 	if device == nil {
-		return errors.New("no widevine device provided. You either need:\n- a \".wvd\" file,\n- or \"client_id.bin\" and \"private_key.pem\" files.\nI'm not sharing links for obvious reasons, but search \"ready to use cdms\" on Google :)\n")
-	} else if err != nil {
-		return err
+		return errors.New("no widevine device provided. You either need:\n- a \".wvd\" file,\n- or \"client_id.bin\" and \"private_key.pem\" files.\nPlace them in the current directory or assets/ folder.\n")
 	}
 	cdm := widevine.NewCDM(device)
 	decodedPssh, err := base64.StdEncoding.DecodeString(psshData)

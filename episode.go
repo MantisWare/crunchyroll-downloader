@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 )
 
 type Episode struct {
@@ -26,33 +25,32 @@ type Subtitle struct {
 	URL string `json:"url"`
 }
 
-func getEpisode(id string) Episode {
+func getEpisode(id string) (Episode, error) {
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://www.crunchyroll.com/playback/v3/%s/web/firefox/play", id), nil)
 	if err != nil {
-		panic(err)
+		return Episode{}, fmt.Errorf("creating playback request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {
-		panic(err)
+		return Episode{}, fmt.Errorf("playback request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var episode Episode
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		panic(err)
+		return Episode{}, fmt.Errorf("reading playback response: %w", err)
 	}
 	if err = json.Unmarshal(body, &episode); err != nil {
-		panic(err)
+		return Episode{}, fmt.Errorf("parsing playback response: %w", err)
 	}
 	if episode.Error != nil {
-		print("Error:", *episode.Error)
-		os.Exit(1)
+		return Episode{}, fmt.Errorf("crunchyroll: %s", *episode.Error)
 	}
 
-	return episode
+	return episode, nil
 }
 
 type EpisodeMetadataResponse struct {
