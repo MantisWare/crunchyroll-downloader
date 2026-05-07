@@ -58,7 +58,57 @@ func getBaseUrl(set *mpd.AdaptationSet, isVideoSet bool, quality string) (*strin
 			}
 		}
 	}
+
+	// Fallback for audio: pick the highest-bandwidth representation available
+	if !isVideoSet {
+		var bestBaseUrl *string
+		var bestId *string
+		var bestBandwidth uint64
+
+		for _, representation := range set.Representations {
+			bw := uint64(0)
+			if representation.Bandwidth != nil {
+				bw = *representation.Bandwidth
+			}
+			if bw >= bestBandwidth && len(representation.BaseURL) > 0 {
+				bestBandwidth = bw
+				bestBaseUrl = &representation.BaseURL[0].Value
+				bestId = representation.ID
+			}
+		}
+		return bestBaseUrl, bestId
+	}
+
 	return nil, nil
+}
+
+func findAdaptationSets(manifest *mpd.MPD) (*mpd.AdaptationSet, *mpd.AdaptationSet) {
+	var videoSet, audioSet *mpd.AdaptationSet
+
+	for _, set := range manifest.Period[0].AdaptationSets {
+		mime := strings.ToLower(set.MimeType)
+		contentType := ""
+		if set.ContentType != nil {
+			contentType = strings.ToLower(*set.ContentType)
+		}
+
+		switch {
+		case videoSet == nil && (strings.Contains(mime, "video") || contentType == "video"):
+			videoSet = set
+		case audioSet == nil && (strings.Contains(mime, "audio") || contentType == "audio"):
+			audioSet = set
+		}
+	}
+
+	// Fallback to positional if mime/content type detection didn't work
+	if videoSet == nil && len(manifest.Period[0].AdaptationSets) > 0 {
+		videoSet = manifest.Period[0].AdaptationSets[0]
+	}
+	if audioSet == nil && len(manifest.Period[0].AdaptationSets) > 1 {
+		audioSet = manifest.Period[0].AdaptationSets[1]
+	}
+
+	return videoSet, audioSet
 }
 
 func expandTimeline(timeline []*mpd.SegmentTimelineS, startNumber int64) []int64 {

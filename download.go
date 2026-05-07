@@ -252,8 +252,11 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		fmt.Printf("! PSSH not found for S%02vE%02v, skipping...\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
 		return
 	}
-	videoSet := manifest.Period[0].AdaptationSets[0]
-	audioSet := manifest.Period[0].AdaptationSets[1]
+	videoSet, audioSet := findAdaptationSets(manifest)
+	if videoSet == nil || audioSet == nil {
+		fmt.Printf("! Could not find video/audio adaptation sets for S%02vE%02v\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
+		return
+	}
 
 	err = getLicense(*pssh, contentId, episode.Token)
 	if err != nil {

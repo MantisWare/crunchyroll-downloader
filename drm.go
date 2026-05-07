@@ -19,19 +19,15 @@ import (
 
 var keys []*widevine.Key
 
-// getPssh finds the PSSH in the MPD manifest
+// getPssh finds the PSSH in the MPD manifest by searching all adaptation sets
 func getPssh(mpd *mpd.MPD) *string {
-	set := mpd.Period[0].AdaptationSets[0]
-	if set == nil {
-		return nil
-	}
-
-	for _, contentProtection := range set.ContentProtections {
-		if contentProtection.CencPSSH != nil {
-			return contentProtection.CencPSSH
+	for _, set := range mpd.Period[0].AdaptationSets {
+		for _, contentProtection := range set.ContentProtections {
+			if contentProtection.CencPSSH != nil {
+				return contentProtection.CencPSSH
+			}
 		}
 	}
-
 	return nil
 }
 
