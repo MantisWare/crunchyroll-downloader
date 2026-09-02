@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -9,7 +10,7 @@ import (
 	"github.com/unki2aut/go-mpd"
 )
 
-func parseManifest(url string) *mpd.MPD {
+func parseManifest(url string) (*mpd.MPD, []byte) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		panic(err)
@@ -26,10 +27,12 @@ func parseManifest(url string) *mpd.MPD {
 	if err != nil {
 		panic(err)
 	}
-	mpd := new(mpd.MPD)
-	mpd.Decode(body)
+	manifest := new(mpd.MPD)
+	if err := manifest.Decode(body); err != nil {
+		fmt.Printf("Warning: failed to parse MPD: %v\n", err)
+	}
 
-	return mpd
+	return manifest, body
 }
 
 func getBaseUrl(set *mpd.AdaptationSet, isVideoSet bool, quality string) (*string, *string) {
@@ -82,8 +85,34 @@ func getBaseUrl(set *mpd.AdaptationSet, isVideoSet bool, quality string) (*strin
 	return nil, nil
 }
 
+func resolveSegmentTemplate(set *mpd.AdaptationSet, representationId string) *mpd.SegmentTemplate {
+	if set == nil {
+		return nil
+	}
+	if set.SegmentTemplate != nil {
+		return set.SegmentTemplate
+	}
+	for _, representation := range set.Representations {
+		if representation.SegmentTemplate == nil {
+			continue
+		}
+		if representation.ID != nil && *representation.ID == representationId {
+			return representation.SegmentTemplate
+		}
+	}
+	for _, representation := range set.Representations {
+		if representation.SegmentTemplate != nil {
+			return representation.SegmentTemplate
+		}
+	}
+	return nil
+}
+
 func findAdaptationSets(manifest *mpd.MPD) (*mpd.AdaptationSet, *mpd.AdaptationSet) {
 	var videoSet, audioSet *mpd.AdaptationSet
+	if manifest == nil || len(manifest.Period) == 0 {
+		return nil, nil
+	}
 
 	for _, set := range manifest.Period[0].AdaptationSets {
 		mime := strings.ToLower(set.MimeType)

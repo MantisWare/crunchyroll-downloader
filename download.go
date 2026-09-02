@@ -91,13 +91,29 @@ type segmentJob struct {
 }
 
 func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (string, error) {
-	initUrl := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Initialization, nil)
+	if baseUrl == nil || representationId == nil || set == nil {
+		return "", fmt.Errorf("missing base URL, representation ID, or adaptation set")
+	}
+
+	template := resolveSegmentTemplate(set, *representationId)
+	if template == nil || template.Initialization == nil || template.Media == nil {
+		return "", fmt.Errorf("manifest is missing SegmentTemplate (initialization/media)")
+	}
+	if template.SegmentTimeline == nil {
+		return "", fmt.Errorf("manifest is missing SegmentTimeline")
+	}
+
+	initUrl := buildUrl(*baseUrl, *representationId, *template.Initialization, nil)
 	initData, err := downloadPart(initUrl)
 	if err != nil {
 		return "", err
 	}
 
-	timeline := expandTimeline(set.SegmentTemplate.SegmentTimeline.S, 1)
+	startNumber := int64(1)
+	if template.StartNumber != nil {
+		startNumber = int64(*template.StartNumber)
+	}
+	timeline := expandTimeline(template.SegmentTimeline.S, startNumber)
 	total := len(timeline)
 	results := make([][]byte, total)
 	var downloadErr error
@@ -125,7 +141,7 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (s
 	}
 
 	for i, item := range timeline {
-		url := buildUrl(*baseUrl, *representationId, *set.SegmentTemplate.Media, &item)
+		url := buildUrl(*baseUrl, *representationId, *template.Media, &item)
 		jobs <- segmentJob{index: i, url: url}
 	}
 	close(jobs)
@@ -246,15 +262,52 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 
 	fmt.Printf("Downloading: %s (S%02vE%02v) from %s\n", info.Title, info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, info.EpisodeMetadata.SeriesTitle)
 
-	manifest := parseManifest(episode.ManifestURL)
-	pssh := getPssh(manifest)
-	if pssh == nil {
-		fmt.Printf("! PSSH not found for S%02vE%02v, skipping...\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-		return
-	}
+	manifest, rawManifest := parseManifest(episode.ManifestURL)
 	videoSet, audioSet := findAdaptationSets(manifest)
 	if videoSet == nil || audioSet == nil {
 		fmt.Printf("! Could not find video/audio adaptation sets for S%02vE%02v\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
+		return
+	}
+
+	pssh := getPssh(manifest, rawManifest)
+	if pssh == nil && !isOnDemand(manifest) {
+		baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
+		if baseUrl != nil && representationId != nil {
+			template := resolveSegmentTemplate(videoSet, *representationId)
+			if template != nil && template.Initialization != nil {
+				initUrl := buildUrl(*baseUrl, *representationId, *template.Initialization, nil)
+				if initData, initErr := downloadPart(initUrl); initErr == nil {
+					pssh = extractWidevinePsshFromInit(initData)
+				}
+			}
+		}
+	}
+	if pssh == nil && isOnDemand(manifest) {
+		sets, parseErr := parseOnDemand(rawManifest)
+		if parseErr == nil {
+			for _, set := range sets {
+				if !set.IsVideo {
+					continue
+				}
+				rep, ok := selectOnDemandRepresentation(set, *videoQuality, true)
+				if !ok || rep.InitRange == "" {
+					continue
+				}
+				initStart, initEnd, rangeErr := parseByteRange(rep.InitRange)
+				if rangeErr != nil {
+					continue
+				}
+				if initData, initErr := downloadRange(rep.BaseURL, initStart, initEnd); initErr == nil {
+					pssh = extractWidevinePsshFromInit(initData)
+					if pssh != nil {
+						break
+					}
+				}
+			}
+		}
+	}
+	if pssh == nil {
+		fmt.Printf("! PSSH not found for S%02vE%02v, skipping...\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
 		return
 	}
 
@@ -273,28 +326,50 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		fmt.Println("Downloaded subtitles!")
 	}
 
-	baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
-	if baseUrl == nil {
-		fmt.Printf("! Failed to get the video base URL for S%02vE%02v, check -video-quality\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-		return
-	}
-	videoFile, err := downloadParts(baseUrl, representationId, videoSet)
-	if err != nil {
-		fmt.Printf("! Video download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
-		return
-	}
+	var videoFile string
+	var audioFile string
 
-	audioBaseUrl, audioRepresentationId := getBaseUrl(audioSet, false, *audioQuality)
-	if audioBaseUrl == nil {
-		fmt.Printf("! Failed to get the audio base URL for S%02vE%02v, check -audio-quality\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-		_ = os.Remove(videoFile)
-		return
-	}
-	audioFile, err := downloadParts(audioBaseUrl, audioRepresentationId, audioSet)
-	if err != nil {
-		fmt.Printf("! Audio download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
-		_ = os.Remove(videoFile)
-		return
+	if isOnDemand(manifest) {
+		sets, parseErr := parseOnDemand(rawManifest)
+		if parseErr != nil {
+			fmt.Printf("! Failed to parse on-demand manifest for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, parseErr)
+			return
+		}
+		videoFile, err = downloadOnDemandAdaptation(sets, true, *videoQuality)
+		if err != nil {
+			fmt.Printf("! Video download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
+			return
+		}
+		audioFile, err = downloadOnDemandAdaptation(sets, false, *audioQuality)
+		if err != nil {
+			fmt.Printf("! Audio download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
+			_ = os.Remove(videoFile)
+			return
+		}
+	} else {
+		baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
+		if baseUrl == nil {
+			fmt.Printf("! Failed to get the video base URL for S%02vE%02v, check -video-quality\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
+			return
+		}
+		videoFile, err = downloadParts(baseUrl, representationId, videoSet)
+		if err != nil {
+			fmt.Printf("! Video download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
+			return
+		}
+
+		audioBaseUrl, audioRepresentationId := getBaseUrl(audioSet, false, *audioQuality)
+		if audioBaseUrl == nil {
+			fmt.Printf("! Failed to get the audio base URL for S%02vE%02v, check -audio-quality\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
+			_ = os.Remove(videoFile)
+			return
+		}
+		audioFile, err = downloadParts(audioBaseUrl, audioRepresentationId, audioSet)
+		if err != nil {
+			fmt.Printf("! Audio download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
+			_ = os.Remove(videoFile)
+			return
+		}
 	}
 
 	mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info)
@@ -313,6 +388,29 @@ func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes 
 
 			if correctGuidI == -1 {
 				fmt.Printf("! Episode %v has no %s dub available, skipping...\n", episode.EpisodeNumber, *audioLang)
+				if len(episode.Versions) > 0 {
+					fmt.Print("  Available dubs: ")
+					for i, v := range episode.Versions {
+						if v == nil {
+							continue
+						}
+						if i > 0 {
+							fmt.Print(", ")
+						}
+						name := languageNames[v.AudioLocale]
+						if name == "" {
+							name = v.AudioLocale
+						}
+						fmt.Print(name)
+					}
+					fmt.Println()
+				} else if episode.AudioLocale != "" {
+					name := languageNames[episode.AudioLocale]
+					if name == "" {
+						name = episode.AudioLocale
+					}
+					fmt.Printf("  Available audio: %s\n", name)
+				}
 				continue
 			}
 			episodeId = episode.Versions[correctGuidI].GUID

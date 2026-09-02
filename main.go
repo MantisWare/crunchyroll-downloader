@@ -5,10 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 )
+
+// Crunchyroll content IDs vary by era/format, e.g.:
+//
+//	GJ0H7Q5ZJ (9), GT00378115 (10), GE00198973JAJP (14)
+var contentIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{9,14}$`)
 
 var (
 	token         = ""
@@ -97,9 +103,15 @@ MORE INFO
 }
 
 func processUrl(url string) {
-	contentType := strings.Split(url, "/")[3]
-	contentId := strings.Split(url, "/")[4]
-	if len(contentId) != 9 && len(contentId) != 14 {
+	parts := strings.Split(url, "/")
+	if len(parts) < 5 {
+		fmt.Printf("Invalid URL format: %s\n", url)
+		return
+	}
+
+	contentType := parts[3]
+	contentId := parts[4]
+	if !contentIDPattern.MatchString(contentId) {
 		fmt.Printf("Invalid URL format: %s\n", url)
 		return
 	}
@@ -174,25 +186,22 @@ func processUrl(url string) {
 		seasons := getSeasons(contentId)
 
 		if *seasonNumber != 0 {
-			var seasonId string
-			for _, season := range seasons {
-				if season.SeasonNumber == *seasonNumber {
-					seasonId = season.ID
-					break
+			episodes, ok := resolveSeasonEpisodes(seasons, *seasonNumber, *audioLang)
+			if !ok {
+				if len(seasons) == 0 {
+					fmt.Printf("This anime has no season %v!\n", *seasonNumber)
 				}
-			}
-			if seasonId == "" {
-				fmt.Printf("This anime has no season %v!\n", *seasonNumber)
 				return
 			}
-
-			episodes := getSeasonEpisodes(seasonId)
 			downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
 		} else {
 			print("No season number specified, downloading all seasons...\n")
 
-			for _, season := range seasons {
-				episodes := getSeasonEpisodes(season.ID)
+			for _, season := range seasonsForAudio(seasons, *audioLang) {
+				episodes, ok := resolveSeasonEpisodes(seasons, season.SeasonNumber, *audioLang)
+				if !ok || len(episodes) == 0 {
+					continue
+				}
 				downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
 			}
 		}
