@@ -111,16 +111,62 @@ func processUrl(url string) {
 	if contentType == "watch" {
 		info := getEpisodeInfo(contentId)
 		if info.EpisodeMetadata.AudioLocale != *audioLang {
-			correctGuidI := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
-				return v.AudioLocale == *audioLang
-			})
+			resolved := false
 
-			if correctGuidI == -1 {
-				print("! Invalid audio locale. Please put the locale in the \"ja-JP\", \"en-US\"... format.\n")
+			if len(info.EpisodeMetadata.Versions) > 0 {
+				correctGuidI := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
+					return v.AudioLocale == *audioLang
+				})
+
+				if correctGuidI != -1 {
+					contentId = info.EpisodeMetadata.Versions[correctGuidI].GUID
+					resolved = true
+				}
+			}
+
+			// Fallback: look up the correct GUID via the season episodes API
+			if !resolved && info.EpisodeMetadata.SeasonID != "" {
+				fmt.Printf("Version list unavailable, looking up %s dub via season...\n", *audioLang)
+				episodes := getSeasonEpisodes(info.EpisodeMetadata.SeasonID)
+				epIdx := slices.IndexFunc(episodes, func(e SeasonEpisode) bool {
+					return e.EpisodeNumber == info.EpisodeMetadata.EpisodeNumber
+				})
+
+				if epIdx != -1 {
+					ep := episodes[epIdx]
+					if ep.AudioLocale == *audioLang {
+						contentId = ep.ID
+						resolved = true
+					} else if len(ep.Versions) > 0 {
+						dubIdx := slices.IndexFunc(ep.Versions, func(v *DubVersion) bool {
+							return v.AudioLocale == *audioLang
+						})
+						if dubIdx != -1 {
+							contentId = ep.Versions[dubIdx].GUID
+							resolved = true
+						}
+					}
+				}
+			}
+
+			if !resolved {
+				fmt.Printf("! Episode has no %s dub available.\n", *audioLang)
+				if len(info.EpisodeMetadata.Versions) > 0 {
+					fmt.Print("  Available dubs: ")
+					for i, v := range info.EpisodeMetadata.Versions {
+						if i > 0 {
+							fmt.Print(", ")
+						}
+						name := languageNames[v.AudioLocale]
+						if name == "" {
+							name = v.AudioLocale
+						}
+						fmt.Print(name)
+					}
+					fmt.Println()
+				}
 				return
 			}
-			correctGuid := info.EpisodeMetadata.Versions[correctGuidI]
-			contentId = (*correctGuid).GUID
 		}
 
 		downloadEpisode(contentId, videoQuality, audioQuality, subtitlesLang, info)

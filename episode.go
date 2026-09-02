@@ -68,6 +68,8 @@ type EpisodeMetadata struct {
 	EpisodeNumber int    `json:"episode_number"`
 	SeasonNumber  int    `json:"season_number"`
 	SeriesTitle   string `json:"series_title"`
+	SeasonID      string `json:"season_id"`
+	SeriesID      string `json:"series_id"`
 	// AvailabilityStarts represents the date when the episode was released on Crunchyroll
 	AvailabilityStarts string        `json:"availability_starts"`
 	Versions           []*DubVersion `json:"versions"`
