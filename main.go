@@ -1,3 +1,5 @@
+//go:build !gui
+
 package main
 
 import (
@@ -5,26 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"regexp"
-	"slices"
 	"sort"
 	"strings"
-)
-
-// Crunchyroll content IDs vary by era/format, e.g.:
-//
-//	GJ0H7Q5ZJ (9), GT00378115 (10), GE00198973JAJP (14)
-var contentIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{9,14}$`)
-
-var (
-	token         = ""
-	audioLang     = flag.String("audio-lang", "ja-JP", "Audio language")
-	subtitlesLang = flag.String("subs-lang", "en-US", "Subtitles language")
-	videoQuality  = flag.String("video-quality", "1080p", "Video quality")
-	audioQuality  = flag.String("audio-quality", "192k", "Audio quality")
-	seasonNumber  = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
-	etpRt         = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
-	showHelp      = flag.Bool("help", false, "Show detailed help and usage information")
 )
 
 func printHelp() {
@@ -103,108 +87,44 @@ MORE INFO
 }
 
 func processUrl(url string) {
-	parts := strings.Split(url, "/")
-	if len(parts) < 5 {
-		fmt.Printf("Invalid URL format: %s\n", url)
+	parsed, err := parseContentURL(url)
+	if err != nil {
+		fmt.Println(err)
 		return
 	}
 
-	contentType := parts[3]
-	contentId := parts[4]
-	if !contentIDPattern.MatchString(contentId) {
-		fmt.Printf("Invalid URL format: %s\n", url)
-		return
-	}
-	if contentType != "watch" && contentType != "series" {
-		fmt.Printf("Invalid URL (must be /watch/ or /series/): %s\n", url)
-		return
-	}
-
-	if contentType == "watch" {
-		info := getEpisodeInfo(contentId)
-		if info.EpisodeMetadata.AudioLocale != *audioLang {
-			resolved := false
-
-			if len(info.EpisodeMetadata.Versions) > 0 {
-				correctGuidI := slices.IndexFunc(info.EpisodeMetadata.Versions, func(v *DubVersion) bool {
-					return v.AudioLocale == *audioLang
-				})
-
-				if correctGuidI != -1 {
-					contentId = info.EpisodeMetadata.Versions[correctGuidI].GUID
-					resolved = true
-				}
-			}
-
-			// Fallback: look up the correct GUID via the season episodes API
-			if !resolved && info.EpisodeMetadata.SeasonID != "" {
-				fmt.Printf("Version list unavailable, looking up %s dub via season...\n", *audioLang)
-				episodes := getSeasonEpisodes(info.EpisodeMetadata.SeasonID)
-				epIdx := slices.IndexFunc(episodes, func(e SeasonEpisode) bool {
-					return e.EpisodeNumber == info.EpisodeMetadata.EpisodeNumber
-				})
-
-				if epIdx != -1 {
-					ep := episodes[epIdx]
-					if ep.AudioLocale == *audioLang {
-						contentId = ep.ID
-						resolved = true
-					} else if len(ep.Versions) > 0 {
-						dubIdx := slices.IndexFunc(ep.Versions, func(v *DubVersion) bool {
-							return v.AudioLocale == *audioLang
-						})
-						if dubIdx != -1 {
-							contentId = ep.Versions[dubIdx].GUID
-							resolved = true
-						}
-					}
-				}
-			}
-
-			if !resolved {
-				fmt.Printf("! Episode has no %s dub available.\n", *audioLang)
-				if len(info.EpisodeMetadata.Versions) > 0 {
-					fmt.Print("  Available dubs: ")
-					for i, v := range info.EpisodeMetadata.Versions {
-						if i > 0 {
-							fmt.Print(", ")
-						}
-						name := languageNames[v.AudioLocale]
-						if name == "" {
-							name = v.AudioLocale
-						}
-						fmt.Print(name)
-					}
-					fmt.Println()
-				}
-				return
-			}
+	if parsed.Kind == kindWatch {
+		info := getEpisodeInfo(parsed.ID)
+		contentID, ok := resolveWatchEpisodeID(parsed.ID, info, *audioLang)
+		if !ok {
+			return
 		}
+		downloadEpisode(contentID, videoQuality, audioQuality, subtitlesLang, info)
+		return
+	}
 
-		downloadEpisode(contentId, videoQuality, audioQuality, subtitlesLang, info)
-	} else {
-		seasons := getSeasons(contentId)
+	seasons := getSeasons(parsed.ID)
 
-		if *seasonNumber != 0 {
-			episodes, ok := resolveSeasonEpisodes(seasons, *seasonNumber, *audioLang)
-			if !ok {
-				if len(seasons) == 0 {
-					fmt.Printf("This anime has no season %v!\n", *seasonNumber)
-				}
-				return
+	if *seasonNumber != 0 {
+		episodes, ok := resolveSeasonEpisodes(seasons, *seasonNumber, *audioLang)
+		if !ok {
+			if len(seasons) == 0 {
+				fmt.Printf("This anime has no season %v!\n", *seasonNumber)
 			}
-			downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
-		} else {
-			print("No season number specified, downloading all seasons...\n")
-
-			for _, season := range seasonsForAudio(seasons, *audioLang) {
-				episodes, ok := resolveSeasonEpisodes(seasons, season.SeasonNumber, *audioLang)
-				if !ok || len(episodes) == 0 {
-					continue
-				}
-				downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
-			}
+			return
 		}
+		downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
+		return
+	}
+
+	print("No season number specified, downloading all seasons...\n")
+
+	for _, season := range seasonsForAudio(seasons, *audioLang) {
+		episodes, ok := resolveSeasonEpisodes(seasons, season.SeasonNumber, *audioLang)
+		if !ok || len(episodes) == 0 {
+			continue
+		}
+		downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
 	}
 }
 
@@ -225,7 +145,12 @@ func main() {
 		os.Exit(1)
 	}
 	if *etpRt == "" {
-		fmt.Println("Error: -etp-rt is required.\n")
+		if saved := loadAppConfig().EtpRt; saved != "" {
+			*etpRt = saved
+		}
+	}
+	if *etpRt == "" {
+		fmt.Println("Error: -etp-rt is required.")
 		fmt.Println("To get your etp_rt cookie:")
 		fmt.Println("  1. Log in to crunchyroll.com")
 		fmt.Println("  2. Open Developer Tools")

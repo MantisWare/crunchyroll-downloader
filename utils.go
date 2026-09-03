@@ -1,5 +1,10 @@
 package main
 
+import (
+	"sort"
+	"strings"
+)
+
 var languageNames = map[string]string{
 	"ja-JP":  "Japanese",
 	"en-US":  "English",
@@ -27,4 +32,34 @@ var languageNames = map[string]string{
 	"zh-TW":  "中文 (國語)",
 	"ko-KR":  "한국어",
 	"th-TH":  "ไทย",
+}
+
+func sortedLanguageCodes() []string {
+	codes := make([]string, 0, len(languageNames))
+	for code := range languageNames {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return codes
+}
+
+func languageLabel(code string) string {
+	name := languageNames[code]
+	if name == "" {
+		return code
+	}
+	return name + " (" + code + ")"
+}
+
+func languageCodeFromLabel(label string) string {
+	for code := range languageNames {
+		if languageLabel(code) == label {
+			return code
+		}
+	}
+	open := strings.LastIndexByte(label, '(')
+	if open != -1 && strings.HasSuffix(label, ")") {
+		return label[open+1 : len(label)-1]
+	}
+	return label
 }
