@@ -18,7 +18,17 @@ type appConfig struct {
 	OutputDir           string `json:"output_dir"`
 	ConvertVideoQuality string `json:"convert_video_quality"`
 	ConvertAudioQuality string `json:"convert_audio_quality"`
+	// WindowWidth and WindowHeight store the content size of the desktop
+	// window so it reopens the way the user left it.
+	WindowWidth  float32 `json:"window_width"`
+	WindowHeight float32 `json:"window_height"`
 }
+
+// Default content size of the desktop window on first launch.
+const (
+	defaultWindowWidth  float32 = 1040
+	defaultWindowHeight float32 = 820
+)
 
 func defaultAppConfig() appConfig {
 	return appConfig{
@@ -29,6 +39,8 @@ func defaultAppConfig() appConfig {
 		OutputDir:           ".",
 		ConvertVideoQuality: "720p",
 		ConvertAudioQuality: "128k",
+		WindowWidth:         defaultWindowWidth,
+		WindowHeight:        defaultWindowHeight,
 	}
 }
 
@@ -95,6 +107,14 @@ func normalizeAppConfig(cfg appConfig) appConfig {
 	}
 	if cfg.ConvertAudioQuality == "" {
 		cfg.ConvertAudioQuality = "128k"
+	}
+	// A missing or nonsensical saved size falls back to the default. Fyne
+	// clamps anything smaller than the content minimum when the window opens.
+	if cfg.WindowWidth <= 0 {
+		cfg.WindowWidth = defaultWindowWidth
+	}
+	if cfg.WindowHeight <= 0 {
+		cfg.WindowHeight = defaultWindowHeight
 	}
 	return cfg
 }

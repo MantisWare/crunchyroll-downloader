@@ -91,6 +91,11 @@ type guiApp struct {
 	currentTitle string
 	busy         bool
 	ignoreSelect bool
+
+	// winSize is the last content size seen while the window was open. The
+	// canvas stops reporting a usable size once the window closes, so the
+	// value is cached rather than read at save time.
+	winSize fyne.Size
 }
 
 func main() {
@@ -106,7 +111,8 @@ func main() {
 
 	g := &guiApp{checkedKeys: make(map[string]bool)}
 	g.win = a.NewWindow("Crunchyroll Downloader")
-	g.win.Resize(fyne.NewSize(1040, 820))
+	g.winSize = fyne.NewSize(cfg.WindowWidth, cfg.WindowHeight)
+	g.win.Resize(g.winSize)
 	// Applying a saved value to a Select fires OnChanged immediately, so the
 	// handlers stay suppressed until every widget exists. Otherwise the convert
 	// tab's defaults get saved over the loaded config before it is built.
@@ -116,6 +122,12 @@ func main() {
 	g.ignoreSelect = false
 
 	g.startLogCapture()
+	// The close button is the last chance to read the geometry: by the time
+	// SetOnClosed runs the canvas no longer reports a usable size.
+	g.win.SetCloseIntercept(func() {
+		g.rememberWindowSize()
+		g.win.Close()
+	})
 	g.win.SetOnClosed(func() {
 		g.cancelBrowserLogin()
 		g.persistSettings()
@@ -387,6 +399,19 @@ func (g *guiApp) ensureWindowFits() {
 	}
 }
 
+// rememberWindowSize caches the current content size so it can be saved later.
+// Sizes are only recorded while the window is genuinely on screen, because a
+// closing or minimised window reports a zero canvas.
+func (g *guiApp) rememberWindowSize() {
+	if g.win == nil {
+		return
+	}
+	size := g.win.Canvas().Size()
+	if size.Width > 0 && size.Height > 0 {
+		g.winSize = size
+	}
+}
+
 func labeled(title string, content fyne.CanvasObject) fyne.CanvasObject {
 	return container.NewVBox(widget.NewLabel(title), content)
 }
@@ -407,6 +432,7 @@ func (g *guiApp) cookieLabel() fyne.CanvasObject {
 }
 
 func (g *guiApp) persistSettings() {
+	g.rememberWindowSize()
 	saveAppConfig(appConfig{
 		EtpRt:               g.etpEntry.Text,
 		AudioLang:           *audioLang,
@@ -416,6 +442,8 @@ func (g *guiApp) persistSettings() {
 		OutputDir:           g.outEntry.Text,
 		ConvertVideoQuality: g.convertVideoQuality(),
 		ConvertAudioQuality: g.convertAudioQuality(),
+		WindowWidth:         g.winSize.Width,
+		WindowHeight:        g.winSize.Height,
 	})
 }
 

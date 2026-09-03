@@ -140,7 +140,7 @@ The desktop app has two tabs:
 
 Supported inputs are MP4, MKV, MOV, AVI, WebM, M4V, FLV, and WMV. Folder conversion processes supported files directly inside the selected folder.
 
-Settings are stored in `~/.crunchyroll.config/config.json` (created on first launch). That file keeps your `etp_rt` cookie, audio/subtitle languages, video and audio quality, and download folder. The CLI also reads `etp_rt` from there if you omit `-etp-rt`.
+Settings are stored in `~/.crunchyroll.config/config.json` (created on first launch). That file keeps your `etp_rt` cookie, audio/subtitle languages, video and audio quality, download folder, and the window size. The CLI also reads `etp_rt` from there if you omit `-etp-rt`.
 
 The `-s -w` flags strip debug symbols for a smaller CLI binary if you build by hand:
 

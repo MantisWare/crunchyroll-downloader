@@ -32,6 +32,7 @@
 - Fixed a startup crash in the Convert tab: applying the saved video quality fired its change handler before the Convert button existed, dereferencing a nil widget
 - Fixed saved conversion qualities being overwritten with defaults on launch, because the Download tab's selects persisted settings before the Convert tab was built
 - Fixed the download options overlapping the episode and progress panes after a Lookup; revealing a hidden container does not trigger a Fyne relayout, so the panes kept their old geometry until the window was resized
+- Desktop UI: the window size is saved to `~/.crunchyroll.config/config.json` and restored on the next launch instead of always reopening at 1040x820
 
 ## 1.3.0
 
