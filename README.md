@@ -1,6 +1,6 @@
 # Crunchyroll Downloader
 
-> CLI tool that downloads anime from Crunchyroll with Widevine DRM decryption, outputting MKV files with metadata, selectable audio dubs, and subtitles.
+> CLI and desktop UI that download anime from Crunchyroll with Widevine DRM decryption, outputting MKV files with metadata, selectable audio dubs, and subtitles.
 
 Built in Go. No browser automation, no yt-dlp — fetches DASH manifests directly via authenticated Crunchyroll APIs, decrypts with Widevine CDM keys, and muxes with FFmpeg.
 
@@ -9,6 +9,8 @@ Built in Go. No browser automation, no yt-dlp — fetches DASH manifests directl
 ## Features
 
 - Download single episodes or entire seasons/series
+- CLI and a simple cross-platform desktop UI (macOS, Linux, Windows)
+- Paste a Crunchyroll URL in the UI to list episodes (or a single episode) and pick download options
 - Choose audio language (dub) and subtitle language per download
 - Configurable video quality (1080p, 720p, etc.) and audio quality (192k, 128k, etc.)
 - Widevine DRM decryption (`.wvd` file or `client_id.bin` + `private_key.pem`)
@@ -17,7 +19,8 @@ Built in Go. No browser automation, no yt-dlp — fetches DASH manifests directl
 - Retry with exponential backoff on connection errors
 - Batch download from a text file of URLs
 - Automatic access token refresh on 401 responses
-- Skips already-downloaded episodes
+- Skips already-downloaded episodes (re-running a season scans the series folder and only fetches missing or incomplete files)
+- After a season pass, retries missing or incomplete episodes
 
 ---
 
@@ -26,6 +29,7 @@ Built in Go. No browser automation, no yt-dlp — fetches DASH manifests directl
 | Layer            | Technology                                     |
 | ---------------- | ---------------------------------------------- |
 | Language         | Go 1.25                                        |
+| Desktop UI       | Fyne v2 (OpenGL / native windowing)            |
 | DRM              | gowidevine (Widevine CDM + PSSH extraction)    |
 | Manifest Parsing | go-mpd (DASH MPD)                              |
 | Muxing           | FFmpeg (external, must be installed)            |
@@ -44,6 +48,14 @@ crunchyroll-downloader/
 ├── assets/                # Default location for .wvd / client_id.bin / private_key.pem
 ├── bin/                   # Local build output (gitignored)
 ├── main.go                # CLI flags, URL routing, audio language GUID resolution
+├── gui.go                 # Desktop UI (built with -tags gui)
+├── gui_actions.go         # UI fetch / download wiring
+├── gui_theme.go           # Dark Crunchyroll-style Fyne theme
+├── gui_log.go             # Download progress log in the UI
+├── flags.go               # Shared CLI/GUI option defaults
+├── url.go                 # Crunchyroll URL parsing
+├── resolve.go             # Episode/season GUID resolution for the requested dub
+├── config.go              # Saved settings in ~/.crunchyroll.config/config.json
 ├── download.go            # Episode + season download orchestration, segment fetching
 ├── episode.go             # Playback API, episode metadata, stream teardown
 ├── season.go              # Season list + episode list from CMS API
@@ -54,6 +66,8 @@ crunchyroll-downloader/
 ├── http_request.go        # Shared HTTP client with 401 retry + token refresh
 ├── utils.go               # Language display name mapping
 ├── go.mod
+├── build.sh               # Build the CLI binary into bin/
+├── build_UI.sh            # Build the desktop UI binary into bin/
 ├── release.sh             # Tag + push release helper script
 ├── CHANGELOG.md
 └── README.md
@@ -64,6 +78,7 @@ crunchyroll-downloader/
 ## Requirements
 
 - [Go](https://go.dev/dl/) (for building from source)
+- A C compiler for the **desktop UI** (Xcode Command Line Tools on macOS, `gcc`/`libgl` on Linux, MinGW on Windows)
 - [FFmpeg](https://www.ffmpeg.org/download.html#get-packages) (must be in PATH)
 - A Crunchyroll account (Premium required for Premium-only content)
 - A Widevine CDM — either a `.wvd` file, or a `client_id.bin` + `private_key.pem` pair
@@ -79,10 +94,33 @@ Download the latest binary from the [releases page](https://github.com/MantisWar
 ```bash
 git clone https://github.com/MantisWare/crunchyroll-downloader.git
 cd crunchyroll-downloader
-go build -ldflags="-s -w" -o bin/crunchyroll-downloader .
+./build.sh
 ```
 
-The binary is output to `bin/`. The `-s -w` flags strip debug symbols for a smaller binary.
+The CLI binary is output to `bin/crunchyroll-downloader`.
+
+### Desktop UI
+
+```bash
+./build_UI.sh
+./bin/crunchyroll-downloader-gui
+```
+
+The UI uses the same download engine as the CLI:
+
+1. Paste your `etp_rt` cookie (hover or click the info icon for where to find it)
+2. Paste a Crunchyroll **series** or **watch** URL and click **Lookup**
+3. The UI reveals the audio/dub, subtitle, quality, and season options available for that title
+4. Series URLs show a season picker and episode checklist; episode URLs show that one episode
+5. Select episodes and click **Download selected**
+
+Settings are stored in `~/.crunchyroll.config/config.json` (created on first launch). That file keeps your `etp_rt` cookie, audio/subtitle languages, video and audio quality, and download folder. The CLI also reads `etp_rt` from there if you omit `-etp-rt`.
+
+The `-s -w` flags strip debug symbols for a smaller CLI binary if you build by hand:
+
+```bash
+go build -ldflags="-s -w" -o bin/crunchyroll-downloader .
+```
 
 ### Get Your `etp_rt` Cookie
 
@@ -210,6 +248,7 @@ Audio and subtitle languages use BCP 47 locale codes. Available options depend o
 9. **Download subtitles** — fetches the `.ass` subtitle file for the requested language (if available)
 10. **Mux** — runs FFmpeg to combine video + audio + subtitles into a single MKV with embedded metadata
 11. **Cleanup** — removes temporary segment and subtitle files, notifies Crunchyroll the stream has ended
+12. **Season retry** — after every episode in the season has been attempted, checks the output folder for missing or tiny files and retries those episodes (up to two extra passes)
 
 ---
 
@@ -259,12 +298,20 @@ git push origin v1.3.0
 ### Build Locally
 
 ```bash
-# Default: build for current OS/arch → bin/
+# CLI for the current OS/arch → bin/
+./build.sh
+
+# Desktop UI for the current OS/arch → bin/
+./build_UI.sh
+
+# CLI by hand
 go build -ldflags="-s -w" -o bin/crunchyroll-downloader .
 
-# Cross-compile for Linux arm64
+# Cross-compile CLI for Linux arm64
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/crunchyroll-downloader-linux-arm64 .
 ```
+
+The GUI cannot be fully statically cross-compiled (`CGO_ENABLED=0`) because Fyne needs the platform windowing libraries. Build it on each target OS with `./build_UI.sh`.
 
 ---
 

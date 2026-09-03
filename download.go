@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +20,175 @@ import (
 )
 
 const maxWorkers = 10
+const minCompleteEpisodeBytes int64 = 256 * 1024
+const seasonRetryPasses = 2
+
+var seasonEpisodeName = regexp.MustCompile(`(?i)S(\d+)E(\d+)`)
+
+func sanitizeFilename(s string) string {
+	illegal := []string{"\\", "/", ":", "*", "?", "\"", "<", ">", "|"}
+	res := s
+	for _, char := range illegal {
+		res = strings.ReplaceAll(res, char, "_")
+	}
+	return strings.TrimRight(res, " .")
+}
+
+func episodeOutputFile(info EpisodeInfo, videoQuality string) string {
+	cleanSeriesTitle := sanitizeFilename(info.EpisodeMetadata.SeriesTitle)
+	dir := filepath.Join(outputDir, cleanSeriesTitle)
+	return filepath.Join(dir, fmt.Sprintf("%s S%02vE%02v [%s].mkv",
+		cleanSeriesTitle,
+		info.EpisodeMetadata.SeasonNumber,
+		info.EpisodeMetadata.EpisodeNumber,
+		videoQuality,
+	))
+}
+
+func episodeOutputComplete(path string) bool {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return stat.Size() >= minCompleteEpisodeBytes
+}
+
+func seriesDirName(info EpisodeInfo) string {
+	return filepath.Join(outputDir, sanitizeFilename(info.EpisodeMetadata.SeriesTitle))
+}
+
+func parseSeasonEpisode(filename string) (int, int, bool) {
+	matches := seasonEpisodeName.FindStringSubmatch(filename)
+	if len(matches) != 3 {
+		return 0, 0, false
+	}
+	season, seasonErr := strconv.Atoi(matches[1])
+	episode, episodeErr := strconv.Atoi(matches[2])
+	if seasonErr != nil || episodeErr != nil {
+		return 0, 0, false
+	}
+	return season, episode, true
+}
+
+// findCompleteEpisodeFile looks for an existing MKV for this season/episode in
+// the series folder, including files that do not match the exact output name.
+func findCompleteEpisodeFile(info EpisodeInfo, videoQuality string) (string, bool) {
+	expected := episodeOutputFile(info, videoQuality)
+	if episodeOutputComplete(expected) {
+		return expected, true
+	}
+
+	dir := seriesDirName(info)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+
+	wantSeason := info.EpisodeMetadata.SeasonNumber
+	wantEpisode := info.EpisodeMetadata.EpisodeNumber
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".mkv") {
+			continue
+		}
+		season, episode, ok := parseSeasonEpisode(name)
+		if !ok || season != wantSeason || episode != wantEpisode {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if episodeOutputComplete(path) {
+			return path, true
+		}
+	}
+
+	return "", false
+}
+
+type seasonEpisodeJob struct {
+	id   string
+	info EpisodeInfo
+}
+
+func printUnavailableDubs(episode SeasonEpisode, audioLang string) {
+	fmt.Printf("! Episode %v has no %s dub available, skipping...\n", episode.EpisodeNumber, audioLang)
+	if len(episode.Versions) > 0 {
+		fmt.Print("  Available dubs: ")
+		for i, v := range episode.Versions {
+			if v == nil {
+				continue
+			}
+			if i > 0 {
+				fmt.Print(", ")
+			}
+			name := languageNames[v.AudioLocale]
+			if name == "" {
+				name = v.AudioLocale
+			}
+			fmt.Print(name)
+		}
+		fmt.Println()
+		return
+	}
+	if episode.AudioLocale != "" {
+		name := languageNames[episode.AudioLocale]
+		if name == "" {
+			name = episode.AudioLocale
+		}
+		fmt.Printf("  Available audio: %s\n", name)
+	}
+}
+
+func resolveSeasonEpisodeJob(episode SeasonEpisode, audioLang string) (seasonEpisodeJob, bool) {
+	episodeId := episode.ID
+	if episode.AudioLocale == audioLang {
+		// Already the requested dub.
+	} else if correctGuidI := slices.IndexFunc(episode.Versions, func(v *DubVersion) bool {
+		return v != nil && v.AudioLocale == audioLang
+	}); correctGuidI != -1 {
+		episodeId = episode.Versions[correctGuidI].GUID
+	} else if episode.AudioLocale == "" && len(episode.Versions) == 0 {
+		// Language-specific season whose episode metadata omits audio_locale.
+	} else {
+		printUnavailableDubs(episode, audioLang)
+		return seasonEpisodeJob{}, false
+	}
+
+	return seasonEpisodeJob{
+		id: episodeId,
+		info: EpisodeInfo{
+			EpisodeMetadata: EpisodeMetadata{
+				SeriesTitle:        episode.SeriesTitle,
+				SeasonNumber:       episode.SeasonNumber,
+				EpisodeNumber:      episode.EpisodeNumber,
+				AudioLocale:        audioLang,
+				Versions:           episode.Versions,
+				AvailabilityStarts: episode.AvailabilityStarts,
+			},
+			Title: episode.Title,
+		},
+	}, true
+}
+
+func incompleteSeasonJobs(jobs []seasonEpisodeJob, videoQuality string) []seasonEpisodeJob {
+	var missing []seasonEpisodeJob
+	for _, job := range jobs {
+		if _, ok := findCompleteEpisodeFile(job.info, videoQuality); !ok {
+			missing = append(missing, job)
+		}
+	}
+	return missing
+}
+
+func formatEpisodeNumbers(jobs []seasonEpisodeJob) string {
+	parts := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		parts = append(parts, fmt.Sprintf("E%02v", job.info.EpisodeMetadata.EpisodeNumber))
+	}
+	return strings.Join(parts, ", ")
+}
 
 func buildUrl(base, representationId, file string, partNum *int64) string {
 	if partNum != nil {
@@ -202,33 +374,19 @@ func downloadSubs(url string) string {
 	return filename
 }
 
-func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) {
-	sanitize := func(s string) string {
-		illegal := []string{"\\", "/", ":", "*", "?", "\"", "<", ">", "|"}
-		res := s
-		for _, char := range illegal {
-			res = strings.ReplaceAll(res, char, "_")
-		}
-		return strings.TrimRight(res, " .")
+func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) bool {
+	outputFile := episodeOutputFile(info, *videoQuality)
+	if existing, ok := findCompleteEpisodeFile(info, *videoQuality); ok {
+		fmt.Printf("Episode %v is already downloaded (%s), skipping...\n", info.EpisodeMetadata.EpisodeNumber, filepath.Base(existing))
+		return true
 	}
-
-	cleanSeriesTitle := sanitize(info.EpisodeMetadata.SeriesTitle)
-
-	if _, err := os.Stat(cleanSeriesTitle); err != nil {
-		_ = os.MkdirAll(cleanSeriesTitle, 0777)
+	if err := os.MkdirAll(filepath.Dir(outputFile), 0777); err != nil {
+		fmt.Printf("! Failed to create output directory: %s\n", err)
+		return false
 	}
-
-	outputFile := fmt.Sprintf("%s/%s S%02vE%02v [%s].mkv",
-		cleanSeriesTitle,
-		cleanSeriesTitle,
-		info.EpisodeMetadata.SeasonNumber,
-		info.EpisodeMetadata.EpisodeNumber,
-		*videoQuality,
-	)
-
 	if _, err := os.Stat(outputFile); err == nil {
-		fmt.Printf("Episode %v is already downloaded, skipping...\n", info.EpisodeMetadata.EpisodeNumber)
-		return
+		fmt.Printf("Episode %v is incomplete (%s), re-downloading...\n", info.EpisodeMetadata.EpisodeNumber, outputFile)
+		_ = os.Remove(outputFile)
 	}
 
 	var episode Episode
@@ -249,7 +407,7 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		}
 
 		fmt.Printf("! Error fetching episode S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
-		return
+		return false
 	}
 
 	defer func() {
@@ -266,7 +424,7 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 	videoSet, audioSet := findAdaptationSets(manifest)
 	if videoSet == nil || audioSet == nil {
 		fmt.Printf("! Could not find video/audio adaptation sets for S%02vE%02v\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-		return
+		return false
 	}
 
 	pssh := getPssh(manifest, rawManifest)
@@ -308,13 +466,13 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 	}
 	if pssh == nil {
 		fmt.Printf("! PSSH not found for S%02vE%02v, skipping...\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-		return
+		return false
 	}
 
 	err = getLicense(*pssh, contentId, episode.Token)
 	if err != nil {
 		fmt.Printf("! License error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
-		return
+		return false
 	}
 
 	var subsFile string
@@ -333,100 +491,127 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		sets, parseErr := parseOnDemand(rawManifest)
 		if parseErr != nil {
 			fmt.Printf("! Failed to parse on-demand manifest for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, parseErr)
-			return
+			return false
 		}
 		videoFile, err = downloadOnDemandAdaptation(sets, true, *videoQuality)
 		if err != nil {
 			fmt.Printf("! Video download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
-			return
+			return false
 		}
 		audioFile, err = downloadOnDemandAdaptation(sets, false, *audioQuality)
 		if err != nil {
 			fmt.Printf("! Audio download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
 			_ = os.Remove(videoFile)
-			return
+			return false
 		}
 	} else {
 		baseUrl, representationId := getBaseUrl(videoSet, true, *videoQuality)
 		if baseUrl == nil {
 			fmt.Printf("! Failed to get the video base URL for S%02vE%02v, check -video-quality\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
-			return
+			return false
 		}
 		videoFile, err = downloadParts(baseUrl, representationId, videoSet)
 		if err != nil {
 			fmt.Printf("! Video download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
-			return
+			return false
 		}
 
 		audioBaseUrl, audioRepresentationId := getBaseUrl(audioSet, false, *audioQuality)
 		if audioBaseUrl == nil {
 			fmt.Printf("! Failed to get the audio base URL for S%02vE%02v, check -audio-quality\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
 			_ = os.Remove(videoFile)
-			return
+			return false
 		}
 		audioFile, err = downloadParts(audioBaseUrl, audioRepresentationId, audioSet)
 		if err != nil {
 			fmt.Printf("! Audio download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
 			_ = os.Remove(videoFile)
-			return
+			return false
 		}
 	}
 
-	mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info)
+	if err := mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info); err != nil {
+		fmt.Printf("! Mux error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
+		_ = os.Remove(outputFile)
+		_ = os.Remove(videoFile)
+		_ = os.Remove(audioFile)
+		_ = os.Remove(subsFile)
+		return false
+	}
+
+	return episodeOutputComplete(outputFile)
 }
 
 func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes []SeasonEpisode) {
+	if len(episodes) == 0 {
+		return
+	}
+
 	fmt.Printf("Downloading season %v of %s (%v episodes)\n\n", episodes[0].SeasonNumber, episodes[0].SeriesTitle, len(episodes))
 
+	var jobs []seasonEpisodeJob
 	for _, episode := range episodes {
-		episodeId := episode.ID
-
-		if episode.AudioLocale != *audioLang {
-			correctGuidI := slices.IndexFunc(episode.Versions, func(v *DubVersion) bool {
-				return v.AudioLocale == *audioLang
-			})
-
-			if correctGuidI == -1 {
-				fmt.Printf("! Episode %v has no %s dub available, skipping...\n", episode.EpisodeNumber, *audioLang)
-				if len(episode.Versions) > 0 {
-					fmt.Print("  Available dubs: ")
-					for i, v := range episode.Versions {
-						if v == nil {
-							continue
-						}
-						if i > 0 {
-							fmt.Print(", ")
-						}
-						name := languageNames[v.AudioLocale]
-						if name == "" {
-							name = v.AudioLocale
-						}
-						fmt.Print(name)
-					}
-					fmt.Println()
-				} else if episode.AudioLocale != "" {
-					name := languageNames[episode.AudioLocale]
-					if name == "" {
-						name = episode.AudioLocale
-					}
-					fmt.Printf("  Available audio: %s\n", name)
-				}
-				continue
-			}
-			episodeId = episode.Versions[correctGuidI].GUID
+		job, ok := resolveSeasonEpisodeJob(episode, *audioLang)
+		if !ok {
+			continue
 		}
-
-		info := EpisodeInfo{
-			EpisodeMetadata: EpisodeMetadata{
-				SeriesTitle:        episode.SeriesTitle,
-				SeasonNumber:       episode.SeasonNumber,
-				EpisodeNumber:      episode.EpisodeNumber,
-				AudioLocale:        *audioLang,
-				Versions:           episode.Versions,
-				AvailabilityStarts: episode.AvailabilityStarts,
-			},
-			Title: episode.Title,
-		}
-		downloadEpisode(episodeId, videoQuality, audioQuality, subtitlesLang, info)
+		jobs = append(jobs, job)
 	}
+
+	if len(jobs) == 0 {
+		fmt.Println("No episodes available to download for this season.")
+		return
+	}
+
+	var toDownload []seasonEpisodeJob
+	present := 0
+	for _, job := range jobs {
+		existing, ok := findCompleteEpisodeFile(job.info, *videoQuality)
+		if ok {
+			present++
+			fmt.Printf("Episode %v already present (%s), skipping...\n", job.info.EpisodeMetadata.EpisodeNumber, filepath.Base(existing))
+			continue
+		}
+		toDownload = append(toDownload, job)
+	}
+
+	if len(toDownload) == 0 {
+		fmt.Printf("Season %v already complete (%v files found). Nothing to download.\n", episodes[0].SeasonNumber, present)
+		return
+	}
+
+	if present > 0 {
+		fmt.Printf("%v of %v episodes already present. Downloading %v remaining...\n\n", present, len(jobs), len(toDownload))
+	}
+
+	runJobs := func(toRun []seasonEpisodeJob) {
+		for _, job := range toRun {
+			downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info)
+		}
+	}
+
+	runJobs(toDownload)
+
+	for pass := 1; pass <= seasonRetryPasses; pass++ {
+		missing := incompleteSeasonJobs(jobs, *videoQuality)
+		if len(missing) == 0 {
+			fmt.Printf("Season %v complete (%v episodes).\n", episodes[0].SeasonNumber, len(jobs))
+			return
+		}
+
+		wait := time.Duration(pass) * 15 * time.Second
+		fmt.Printf("\n%v episode(s) missing or incomplete: %s\n", len(missing), formatEpisodeNumbers(missing))
+		fmt.Printf("Waiting %v then retrying (pass %d/%d)...\n\n", wait, pass, seasonRetryPasses)
+		time.Sleep(wait)
+		runJobs(missing)
+	}
+
+	stillMissing := incompleteSeasonJobs(jobs, *videoQuality)
+	if len(stillMissing) == 0 {
+		fmt.Printf("Season %v complete after retries (%v episodes).\n", episodes[0].SeasonNumber, len(jobs))
+		return
+	}
+
+	fmt.Printf("! Season %v still missing %v episode(s) after retries: %s\n",
+		episodes[0].SeasonNumber, len(stillMissing), formatEpisodeNumbers(stillMissing))
 }

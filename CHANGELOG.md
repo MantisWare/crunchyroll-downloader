@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added a cross-platform desktop UI (macOS, Linux, Windows) for fetching series/episode lists and downloading with the same options as the CLI
+- Added `build.sh` for the CLI binary and `build_UI.sh` for the GUI binary
+- Desktop UI: info tooltip for `etp_rt`, Lookup next to the URL, and download options shown only after a successful lookup of available audio/subs/quality/seasons
+- Desktop UI: options use compact single-line rows and the window grows to fit them, so revealing them after Lookup no longer squashes the episode and progress panes
+- Desktop UI: episode checkbox selection is remembered when changing audio, subtitles, quality, or season instead of resetting to all selected
+- Settings (`etp_rt`, languages, quality, output folder) are saved in `~/.crunchyroll.config/config.json` on launch and whenever they change
+
 ## 1.3.0
 
 - Fixed `-audio-lang` flag being ignored — API calls had `preferred_audio_language` hardcoded to `ja-JP` instead of using the user-provided value
@@ -10,6 +19,8 @@
 - Widevine CDM files are now searched in `./`, `assets/`, and `assets/` relative to the binary — no longer requires running from the same directory as the `.wvd` file
 - Added GitHub Actions CI/CD workflow with cross-platform builds (Linux, macOS, Windows) and automatic GitHub Releases on tag push
 - Build output now targets `bin/` directory
+- Season downloads retry missing or incomplete episodes after the first pass
+- Re-running a season scans the series folder for existing `SxxExx` MKVs and skips complete files
 
 ## 1.2.0
 
