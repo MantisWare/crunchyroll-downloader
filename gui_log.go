@@ -34,6 +34,15 @@ func (g *guiApp) startLogCapture() {
 }
 
 func (g *guiApp) appendLog(chunk string) {
+	if g.isConversionActive() {
+		g.convertLogRaw += chunk
+		text := normalizeCarriageReturns(g.convertLogRaw)
+		g.convertLogEntry.SetText(text)
+		g.convertLogEntry.CursorRow = strings.Count(text, "\n")
+		g.convertLogEntry.Refresh()
+		return
+	}
+
 	g.logRaw += chunk
 	text := normalizeCarriageReturns(g.logRaw)
 	g.logEntry.SetText(text)

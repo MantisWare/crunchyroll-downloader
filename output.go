@@ -30,9 +30,12 @@ func mergeEverything(videoFile, audioFile, subsFile, outputFile string, subtitle
 		outputFile,
 	)
 
-	cmd := exec.Command("ffmpeg", args...)
+	cmd := exec.CommandContext(downloadContext(), "ffmpeg", args...)
 	if err := cmd.Run(); err != nil {
 		_ = os.Remove(outputFile)
+		if isCancelled() {
+			return errCancelled
+		}
 		return fmt.Errorf("ffmpeg mux: %w", err)
 	}
 

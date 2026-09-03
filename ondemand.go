@@ -160,7 +160,7 @@ func selectOnDemandRepresentation(set onDemandAdaptationSet, quality string, isV
 }
 
 func onDemandRequest(url, byteRange string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(downloadContext(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -169,9 +169,12 @@ func onDemandRequest(url, byteRange string) (*http.Response, error) {
 	}
 	req.Header.Set("Origin", "https://static.crunchyroll.com")
 	req.Header.Set("Referer", "https://static.crunchyroll.com/")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := mediaClient.Do(req)
 	if err != nil {
+		if isCancelled() {
+			return nil, errCancelled
+		}
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
@@ -196,8 +199,14 @@ func streamRange(w io.Writer, url string, start int64) error {
 		return err
 	}
 	defer resp.Body.Close()
-	_, err = io.Copy(w, resp.Body)
-	return err
+
+	if _, err = io.Copy(w, resp.Body); err != nil {
+		if isCancelled() {
+			return errCancelled
+		}
+		return err
+	}
+	return nil
 }
 
 func tempMediaFile(isVideo bool) string {

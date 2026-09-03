@@ -27,7 +27,7 @@ func getSeasonEpisodes(contentId string) []SeasonEpisode {
 	if err != nil {
 		panic(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {
@@ -64,7 +64,7 @@ func getSeasons(contentId string) []Season {
 	if err != nil {
 		panic(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {

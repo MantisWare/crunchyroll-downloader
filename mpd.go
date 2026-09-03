@@ -10,29 +10,35 @@ import (
 	"github.com/unki2aut/go-mpd"
 )
 
-func parseManifest(url string) (*mpd.MPD, []byte) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func parseManifest(url string) (*mpd.MPD, []byte, error) {
+	req, err := http.NewRequestWithContext(downloadContext(), http.MethodGet, url, nil)
 	if err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("creating manifest request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := mediaClient.Do(req)
 	if err != nil {
-		panic(err)
+		if isCancelled() {
+			return nil, nil, errCancelled
+		}
+		return nil, nil, fmt.Errorf("manifest request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		panic(err)
+		if isCancelled() {
+			return nil, nil, errCancelled
+		}
+		return nil, nil, fmt.Errorf("reading manifest: %w", err)
 	}
 	manifest := new(mpd.MPD)
 	if err := manifest.Decode(body); err != nil {
 		fmt.Printf("Warning: failed to parse MPD: %v\n", err)
 	}
 
-	return manifest, body
+	return manifest, body, nil
 }
 
 func getBaseUrl(set *mpd.AdaptationSet, isVideoSet bool, quality string) (*string, *string) {

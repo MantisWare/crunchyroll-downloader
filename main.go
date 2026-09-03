@@ -4,11 +4,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 func printHelp() {
@@ -22,6 +25,7 @@ OPTIONS
   -url string          URL of the episode or series to download
   -urls string         Path to a text file with one URL per line
   -etp-rt string       The "etp_rt" cookie value from your Crunchyroll account (required)
+  -browser-login       Open a browser to sign in and save the required cookie
   -audio-lang string   Audio language / dub (default "ja-JP")
   -subs-lang string    Subtitles language (default "en-US")
   -video-quality string Video quality: 1080p, 720p, 480p, 360p (default "1080p")
@@ -30,8 +34,10 @@ OPTIONS
   -help                Show this help message
 
 SETUP
-  1. etp_rt cookie (required)
-     Log in to crunchyroll.com, open Developer Tools, then:
+  1. Crunchyroll account (required)
+     Add -browser-login to open a supported browser and sign in automatically.
+
+     Manual fallback: log in to crunchyroll.com, open Developer Tools, then:
        Firefox:  Storage → Cookies → etp_rt
        Chrome:   Application → Cookies → etp_rt
 
@@ -140,27 +146,59 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *url == "" && *urlsFile == "" {
+	if *url == "" && *urlsFile == "" && !*browserLogin {
 		printHelp()
 		os.Exit(1)
 	}
+	cfg := loadAppConfig()
+	if *browserLogin {
+		fmt.Println("Opening Crunchyroll sign-in in a temporary browser window...")
+		fmt.Println("Complete the login there; this process will continue automatically.")
+
+		signalCtx, stopSignals := signal.NotifyContext(
+			context.Background(),
+			os.Interrupt,
+			syscall.SIGTERM,
+		)
+		loginCtx, cancelLogin := context.WithTimeout(signalCtx, browserLoginTimeout)
+		cookie, loginErr := loginWithBrowser(loginCtx)
+		cancelLogin()
+		stopSignals()
+		if loginErr != nil {
+			fmt.Printf("Error: browser sign-in failed: %s\n", loginErr)
+			os.Exit(1)
+		}
+
+		*etpRt = cookie
+	}
 	if *etpRt == "" {
-		if saved := loadAppConfig().EtpRt; saved != "" {
+		if saved := cfg.EtpRt; saved != "" {
 			*etpRt = saved
 		}
 	}
 	if *etpRt == "" {
 		fmt.Println("Error: -etp-rt is required.")
 		fmt.Println("To get your etp_rt cookie:")
-		fmt.Println("  1. Log in to crunchyroll.com")
-		fmt.Println("  2. Open Developer Tools")
+		fmt.Println("  1. Re-run with -browser-login, or log in to crunchyroll.com")
+		fmt.Println("  2. For manual setup, open Developer Tools")
 		fmt.Println("     Firefox:  Storage → Cookies → etp_rt")
 		fmt.Println("     Chrome:   Application → Cookies → etp_rt")
 		fmt.Println("\nRun with -help for full usage information.")
 		os.Exit(1)
 	}
 
-	token = GetAccessToken(*etpRt)
+	if err := RefreshAccessToken(*etpRt); err != nil {
+		fmt.Printf("Error: failed to sign in with the etp_rt cookie: %s\n", err)
+		os.Exit(1)
+	}
+	if *browserLogin {
+		cfg.EtpRt = *etpRt
+		saveAppConfig(cfg)
+		fmt.Println("Signed in successfully. The session cookie was saved.")
+	}
+	if *url == "" && *urlsFile == "" {
+		return
+	}
 
 	if *urlsFile != "" {
 		file, err := os.Open(*urlsFile)

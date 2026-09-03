@@ -298,33 +298,69 @@ func (g *guiApp) downloadSelected(etp string, selected []SeasonEpisode) {
 	defer g.setBusy(false)
 	g.setStatus(fmt.Sprintf("Downloading %d episode(s)…", len(selected)))
 
+	beginCancellable()
+	defer endCancellable()
+
 	g.beginDownload(len(selected))
 	defer g.endDownload()
 
+	fyne.Do(func() {
+		g.stopBtn.Enable()
+	})
+
 	okCount := 0
 	for i, episode := range selected {
+		if isCancelled() {
+			break
+		}
+
 		g.startEpisodeProgress()
 		g.setStatus(fmt.Sprintf("Downloading %s (%d of %d)…", episodeKey(episode), i+1, len(selected)))
 
-		job, ok := resolveSeasonEpisodeJob(episode, *audioLang)
-		if ok && downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info) {
+		if downloadOneEpisode(episode) {
 			okCount++
 		}
 
 		g.completeEpisodeProgress()
 	}
 
+	stopped := isCancelled()
 	msg := fmt.Sprintf("Finished: %d/%d episode(s) downloaded.", okCount, len(selected))
+	if stopped {
+		msg = fmt.Sprintf("Stopped: %d/%d episode(s) downloaded.", okCount, len(selected))
+	}
 	fmt.Println(msg)
 	title := ""
 	if len(g.episodes) > 0 {
 		title = g.episodes[0].SeriesTitle
 	}
+	dialogTitle := "Download complete"
+	if stopped {
+		dialogTitle = "Download stopped"
+	}
 	g.setStatus(msg)
 	fyne.Do(func() {
+		g.stopBtn.Disable()
 		g.renderEpisodes(title, g.episodes)
-		dialog.ShowInformation("Download complete", msg, g.win)
+		dialog.ShowInformation(dialogTitle, msg, g.win)
 	})
+}
+
+// downloadOneEpisode isolates a single episode download so an unexpected
+// failure inside the engine cannot take down the whole app.
+func downloadOneEpisode(episode SeasonEpisode) (ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			fmt.Printf("! Unexpected error on %s: %v\n", episodeKey(episode), recovered)
+			ok = false
+		}
+	}()
+
+	job, resolved := resolveSeasonEpisodeJob(episode, *audioLang)
+	if !resolved {
+		return false
+	}
+	return downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info)
 }
 
 func loginWithCookie(etp string) (err error) {
@@ -333,10 +369,12 @@ func loginWithCookie(etp string) (err error) {
 			err = fmt.Errorf("login failed: %v", recovered)
 		}
 	}()
-	token = GetAccessToken(etp)
-	if token == "" {
-		return fmt.Errorf("login failed: empty access token")
+	if err := RefreshAccessToken(etp); err != nil {
+		return fmt.Errorf("login failed: %w", err)
 	}
+	// Keep the validated cookie available to automatic token refreshes later
+	// in a long-running season download.
+	*etpRt = etp
 	return nil
 }
 

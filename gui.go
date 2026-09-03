@@ -21,12 +21,13 @@ import (
 
 const seasonAllLabel = "All seasons"
 
-const cookieHelpText = `Log in at crunchyroll.com, then copy the etp_rt cookie from Developer Tools.
+const cookieHelpText = `The easiest option is Sign in with browser. A temporary Chrome, Edge, Brave, or Chromium window opens so you can sign in directly with Crunchyroll. The app captures only the etp_rt session cookie and removes the temporary browser profile afterward.
+
+Manual fallback:
+Log in at crunchyroll.com, then copy the etp_rt cookie from Developer Tools.
 
 Firefox: Storage → Cookies → etp_rt
-Chrome / Edge: Application → Cookies → etp_rt
-
-Paste that value here. It is saved on this computer for next time.`
+Chrome / Edge: Application → Cookies → etp_rt`
 
 var defaultVideoQualities = []string{"1080p", "720p", "480p", "360p"}
 var defaultAudioQualities = []string{"192k", "128k", "96k"}
@@ -50,6 +51,8 @@ type guiApp struct {
 	lookupBtn  *widget.Button
 	dlBtn      *widget.Button
 	resetBtn   *widget.Button
+	stopBtn    *widget.Button
+	signInBtn  *widget.Button
 	progress   *widget.ProgressBar
 
 	progressMu sync.Mutex
@@ -58,6 +61,25 @@ type guiApp struct {
 	dlDone     int
 	dlPhase    int
 	dlPhasePct float64
+
+	browserLoginMu     sync.Mutex
+	browserLoginCancel func()
+
+	convertSourceEntry *widget.Entry
+	convertVideoSel    *widget.Select
+	convertAudioSel    *widget.Select
+	convertStatus      *widget.Label
+	convertLogEntry    *widget.Entry
+	convertLogRaw      string
+	convertProgress    *widget.ProgressBar
+	convertBtn         *widget.Button
+	convertStopBtn     *widget.Button
+	convertClearBtn    *widget.Button
+	convertPaths       []string
+	convertFolder      string
+	isConvertTab       bool
+	convertMu          sync.Mutex
+	convertActive      bool
 
 	parsed       parsedContent
 	lookedUpURL  string
@@ -85,12 +107,25 @@ func main() {
 	g := &guiApp{checkedKeys: make(map[string]bool)}
 	g.win = a.NewWindow("Crunchyroll Downloader")
 	g.win.Resize(fyne.NewSize(1040, 820))
+	// Applying a saved value to a Select fires OnChanged immediately, so the
+	// handlers stay suppressed until every widget exists. Otherwise the convert
+	// tab's defaults get saved over the loaded config before it is built.
+	g.ignoreSelect = true
 	g.build(cfg)
+	g.buildConvert(cfg)
+	g.ignoreSelect = false
+
 	g.startLogCapture()
 	g.win.SetOnClosed(func() {
+		g.cancelBrowserLogin()
 		g.persistSettings()
 	})
 	g.win.SetContent(g.layout())
+	g.win.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
+		if g.isConvertTab {
+			g.handleDroppedURIs(uris)
+		}
+	})
 	g.win.ShowAndRun()
 }
 
@@ -101,6 +136,9 @@ func (g *guiApp) build(cfg appConfig) {
 	g.etpEntry.OnChanged = func(_ string) {
 		g.persistSettings()
 	}
+	g.signInBtn = widget.NewButtonWithIcon("Sign in with browser", theme.LoginIcon(), func() {
+		g.startOrCancelBrowserLogin()
+	})
 
 	g.urlEntry = widget.NewEntry()
 	g.urlEntry.SetPlaceHolder("https://www.crunchyroll.com/series/... or /watch/...")
@@ -208,14 +246,20 @@ func (g *guiApp) build(cfg appConfig) {
 		g.resetForNewURL()
 	})
 
+	g.stopBtn = widget.NewButtonWithIcon("Stop", theme.CancelIcon(), func() {
+		requestCancel()
+		g.stopBtn.Disable()
+		g.setStatus("Stopping — finishing the current segment…")
+	})
+	g.stopBtn.Importance = widget.DangerImportance
+	g.stopBtn.Disable()
+
 	g.progress = widget.NewProgressBar()
 	g.progress.TextFormatter = g.progressText
 	g.progress.Hide()
 }
 
-func (g *guiApp) layout() fyne.CanvasObject {
-	header := widget.NewRichTextFromMarkdown("## Crunchyroll Downloader")
-
+func (g *guiApp) downloadTabContent() fyne.CanvasObject {
 	browse := widget.NewButtonWithIcon("Browse", theme.FolderIcon(), func() {
 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err != nil || uri == nil {
@@ -248,8 +292,10 @@ func (g *guiApp) layout() fyne.CanvasObject {
 	g.optionsBox.Hide()
 
 	form := container.NewVBox(
-		header,
-		container.NewVBox(g.cookieLabel(), g.etpEntry),
+		container.NewVBox(
+			g.cookieLabel(),
+			container.NewBorder(nil, nil, nil, g.signInBtn, g.etpEntry),
+		),
 		labeled("Crunchyroll URL", container.NewBorder(nil, nil, nil, g.lookupBtn, g.urlEntry)),
 		labeled("Save downloads to", container.NewBorder(nil, nil, nil, browse, g.outEntry)),
 		g.optionsBox,
@@ -285,12 +331,22 @@ func (g *guiApp) layout() fyne.CanvasObject {
 
 	bottom := container.NewVBox(
 		g.progress,
-		container.NewBorder(nil, nil, g.status, container.NewHBox(g.resetBtn, g.dlBtn)),
+		container.NewBorder(nil, nil, g.status, container.NewHBox(g.resetBtn, g.stopBtn, g.dlBtn)),
 	)
 
 	return container.NewPadded(container.NewBorder(
 		form, bottom, nil, nil, container.NewStack(floor, split),
 	))
+}
+
+func (g *guiApp) layout() fyne.CanvasObject {
+	downloadTab := container.NewTabItemWithIcon("Download", theme.DownloadIcon(), g.downloadTabContent())
+	convertTab := container.NewTabItemWithIcon("Convert", theme.MediaVideoIcon(), g.convertTabContent())
+	tabs := container.NewAppTabs(downloadTab, convertTab)
+	tabs.OnSelected = func(item *container.TabItem) {
+		g.isConvertTab = item == convertTab
+	}
+	return tabs
 }
 
 // ensureWindowFits grows the window when the content needs more room than the
@@ -338,12 +394,14 @@ func (g *guiApp) cookieLabel() fyne.CanvasObject {
 
 func (g *guiApp) persistSettings() {
 	saveAppConfig(appConfig{
-		EtpRt:        g.etpEntry.Text,
-		AudioLang:    *audioLang,
-		SubsLang:     *subtitlesLang,
-		VideoQuality: *videoQuality,
-		AudioQuality: *audioQuality,
-		OutputDir:    g.outEntry.Text,
+		EtpRt:               g.etpEntry.Text,
+		AudioLang:           *audioLang,
+		SubsLang:            *subtitlesLang,
+		VideoQuality:        *videoQuality,
+		AudioQuality:        *audioQuality,
+		OutputDir:           g.outEntry.Text,
+		ConvertVideoQuality: g.convertVideoQuality(),
+		ConvertAudioQuality: g.convertAudioQuality(),
 	})
 }
 
@@ -354,9 +412,16 @@ func (g *guiApp) setBusy(busy bool) {
 			g.lookupBtn.Disable()
 			g.dlBtn.Disable()
 			g.resetBtn.Disable()
+			g.convertBtn.Disable()
+			g.convertClearBtn.Disable()
 			return
 		}
+		g.stopBtn.Disable()
 		g.resetBtn.Enable()
+		g.convertClearBtn.Enable()
+		if g.convertFolder != "" || len(g.convertPaths) > 0 {
+			g.convertBtn.Enable()
+		}
 		if strings.TrimSpace(g.urlEntry.Text) != "" {
 			g.lookupBtn.Enable()
 		}
@@ -454,7 +519,7 @@ func (g *guiApp) renderEpisodes(title string, episodes []SeasonEpisode) {
 				EpisodeNumber: ep.EpisodeNumber,
 			},
 		}
-		if episodeOutputComplete(episodeOutputFile(info, *videoQuality)) {
+		if _, ok := findCompleteEpisodeFile(info, *videoQuality); ok {
 			label += "  (downloaded)"
 		}
 
