@@ -52,6 +52,8 @@ crunchyroll-downloader/
 ├── gui_actions.go         # UI fetch / download wiring
 ├── gui_theme.go           # Dark Crunchyroll-style Fyne theme
 ├── gui_log.go             # Download progress log in the UI
+├── gui_progress.go        # Download progress bar tracking
+├── catalog.go             # Available audio/subtitle/quality lookup per title
 ├── flags.go               # Shared CLI/GUI option defaults
 ├── url.go                 # Crunchyroll URL parsing
 ├── resolve.go             # Episode/season GUID resolution for the requested dub
@@ -112,7 +114,8 @@ The UI uses the same download engine as the CLI:
 2. Paste a Crunchyroll **series** or **watch** URL and click **Lookup**
 3. The UI reveals the audio/dub, subtitle, quality, and season options available for that title
 4. Series URLs show a season picker and episode checklist; episode URLs show that one episode
-5. Select episodes and click **Download selected**
+5. Select episodes and click **Download selected** — a progress bar at the bottom tracks the run
+6. Click **Reset** to clear the URL, episode list, and log so you can paste another link
 
 Settings are stored in `~/.crunchyroll.config/config.json` (created on first launch). That file keeps your `etp_rt` cookie, audio/subtitle languages, video and audio quality, and download folder. The CLI also reads `etp_rt` from there if you omit `-etp-rt`.
 

@@ -298,15 +298,20 @@ func (g *guiApp) downloadSelected(etp string, selected []SeasonEpisode) {
 	defer g.setBusy(false)
 	g.setStatus(fmt.Sprintf("Downloading %d episode(s)…", len(selected)))
 
+	g.beginDownload(len(selected))
+	defer g.endDownload()
+
 	okCount := 0
-	for _, episode := range selected {
+	for i, episode := range selected {
+		g.startEpisodeProgress()
+		g.setStatus(fmt.Sprintf("Downloading %s (%d of %d)…", episodeKey(episode), i+1, len(selected)))
+
 		job, ok := resolveSeasonEpisodeJob(episode, *audioLang)
-		if !ok {
-			continue
-		}
-		if downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info) {
+		if ok && downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info) {
 			okCount++
 		}
+
+		g.completeEpisodeProgress()
 	}
 
 	msg := fmt.Sprintf("Finished: %d/%d episode(s) downloaded.", okCount, len(selected))

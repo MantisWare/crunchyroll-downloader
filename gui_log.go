@@ -39,6 +39,14 @@ func (g *guiApp) appendLog(chunk string) {
 	g.logEntry.SetText(text)
 	g.logEntry.CursorRow = strings.Count(text, "\n")
 	g.logEntry.Refresh()
+	g.noteLogProgress(chunk)
+}
+
+func (g *guiApp) clearLog() {
+	g.logRaw = ""
+	g.logEntry.SetText("")
+	g.logEntry.CursorRow = 0
+	g.logEntry.Refresh()
 }
 
 func normalizeCarriageReturns(s string) string {

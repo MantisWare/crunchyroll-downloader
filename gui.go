@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -48,6 +49,15 @@ type guiApp struct {
 	episodeBox *fyne.Container
 	lookupBtn  *widget.Button
 	dlBtn      *widget.Button
+	resetBtn   *widget.Button
+	progress   *widget.ProgressBar
+
+	progressMu sync.Mutex
+	dlActive   bool
+	dlTotal    int
+	dlDone     int
+	dlPhase    int
+	dlPhasePct float64
 
 	parsed       parsedContent
 	lookedUpURL  string
@@ -193,6 +203,14 @@ func (g *guiApp) build(cfg appConfig) {
 	})
 	g.dlBtn.Importance = widget.HighImportance
 	g.dlBtn.Disable()
+
+	g.resetBtn = widget.NewButtonWithIcon("Reset", theme.ViewRefreshIcon(), func() {
+		g.resetForNewURL()
+	})
+
+	g.progress = widget.NewProgressBar()
+	g.progress.TextFormatter = g.progressText
+	g.progress.Hide()
 }
 
 func (g *guiApp) layout() fyne.CanvasObject {
@@ -265,7 +283,10 @@ func (g *guiApp) layout() fyne.CanvasObject {
 	floor := canvas.NewRectangle(color.Transparent)
 	floor.SetMinSize(fyne.NewSize(0, 340))
 
-	bottom := container.NewBorder(nil, nil, g.status, g.dlBtn)
+	bottom := container.NewVBox(
+		g.progress,
+		container.NewBorder(nil, nil, g.status, container.NewHBox(g.resetBtn, g.dlBtn)),
+	)
 
 	return container.NewPadded(container.NewBorder(
 		form, bottom, nil, nil, container.NewStack(floor, split),
@@ -332,8 +353,10 @@ func (g *guiApp) setBusy(busy bool) {
 		if busy {
 			g.lookupBtn.Disable()
 			g.dlBtn.Disable()
+			g.resetBtn.Disable()
 			return
 		}
+		g.resetBtn.Enable()
 		if strings.TrimSpace(g.urlEntry.Text) != "" {
 			g.lookupBtn.Enable()
 		}
@@ -341,6 +364,19 @@ func (g *guiApp) setBusy(busy bool) {
 			g.dlBtn.Enable()
 		}
 	})
+}
+
+// resetForNewURL clears the looked-up title, episode list, log, and progress so
+// a new URL can be pasted. Saved credentials and preferences are kept.
+func (g *guiApp) resetForNewURL() {
+	if g.busy {
+		return
+	}
+
+	g.urlEntry.SetText("")
+	g.clearLog()
+	g.hideProgress()
+	g.status.SetText("Paste a Crunchyroll URL, then click Lookup.")
 }
 
 func (g *guiApp) setStatus(text string) {

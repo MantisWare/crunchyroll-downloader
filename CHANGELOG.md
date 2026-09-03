@@ -8,6 +8,8 @@
 - Desktop UI: options use compact single-line rows and the window grows to fit them, so revealing them after Lookup no longer squashes the episode and progress panes
 - Desktop UI: episode checkbox selection is remembered when changing audio, subtitles, quality, or season instead of resetting to all selected
 - Settings (`etp_rt`, languages, quality, output folder) are saved in `~/.crunchyroll.config/config.json` on launch and whenever they change
+- Desktop UI: added a Reset button that clears the URL, episode list, log, and progress so a new link can be pasted, keeping saved credentials and preferences
+- Desktop UI: added a download progress bar showing the current episode, run position, and percentage, driven by the downloader's segment and pass output
 
 ## 1.3.0
 
