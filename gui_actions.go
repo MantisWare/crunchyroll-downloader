@@ -218,10 +218,10 @@ func (g *guiApp) applyLookup(result lookupResult) {
 	}
 
 	g.optionsBox.Show()
-	g.optionsBox.Refresh()
 	g.ensureWindowFits()
 	g.renderEpisodes(result.title, result.episodes)
 	g.persistSettings()
+	g.relayout()
 }
 
 func (g *guiApp) reloadEpisodes() {

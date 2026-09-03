@@ -349,6 +349,20 @@ func (g *guiApp) layout() fyne.CanvasObject {
 	return tabs
 }
 
+// relayout re-runs the layout from the window root. Showing or hiding a
+// container only toggles its Hidden flag, and refreshing that container only
+// lays out its own children, so nothing tells the surrounding panes that the
+// minimum size changed. Without this they keep their old geometry until the
+// user resizes the window, and revealed controls draw on top of them.
+func (g *guiApp) relayout() {
+	if g.win == nil {
+		return
+	}
+	if content := g.win.Content(); content != nil {
+		content.Refresh()
+	}
+}
+
 // ensureWindowFits grows the window when the content needs more room than the
 // current size, so newly shown controls never compress the rest of the layout.
 func (g *guiApp) ensureWindowFits() {
@@ -600,6 +614,7 @@ func (g *guiApp) resetLookupState() {
 	if g.status != nil && strings.TrimSpace(g.urlEntry.Text) != "" {
 		g.status.SetText("Click Lookup to load audio, subtitles, quality, and seasons for this URL.")
 	}
+	g.relayout()
 }
 
 func (g *guiApp) setSelectOptions(sel *widget.Select, options []string, preferred string) {
