@@ -30,7 +30,7 @@ func getEpisode(id string) (Episode, error) {
 	if err != nil {
 		return Episode{}, fmt.Errorf("creating playback request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {
@@ -85,7 +85,7 @@ func getEpisodeInfo(id string) EpisodeInfo {
 	if err != nil {
 		panic(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {
@@ -109,14 +109,15 @@ func getEpisodeInfo(id string) EpisodeInfo {
 func deleteStream(contentId, sToken string) bool {
 	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("https://www.crunchyroll.com/playback/v1/token/%s/%s", contentId, sToken), nil)
 	if err != nil {
-		panic(err)
+		return false
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
 	resp, err := DoRequest(req)
 	if err != nil {
-		panic(err)
+		return false
 	}
+	defer resp.Body.Close()
 
 	return resp.StatusCode == http.StatusNoContent
 }

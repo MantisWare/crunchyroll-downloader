@@ -240,14 +240,16 @@ type CrunchyrollWidevineLicenseResponse struct {
 }
 
 func sendChallenge(contentId, videoToken string, challenge []byte) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodPost, "https://www.crunchyroll.com/license/v1/license/widevine", io.NopCloser(bytes.NewReader(challenge)))
+	// Passed unwrapped so net/http can populate GetBody, which lets DoRequest
+	// replay the challenge if the token needs refreshing mid-flight.
+	req, err := http.NewRequest(http.MethodPost, "https://www.crunchyroll.com/license/v1/license/widevine", bytes.NewReader(challenge))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("X-Cr-Content-Id", contentId)
 	req.Header.Set("X-Cr-Video-Token", videoToken)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+currentToken())
 	req.Header.Set("Origin", "https://static.crunchyroll.com")
 	req.Header.Set("Referer", "https://static.crunchyroll.com/")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")

@@ -198,7 +198,10 @@ func probeStreamOptions(contentID string) (opts streamOptions, err error) {
 	}
 	opts.Subtitles = uniqueSorted(opts.Subtitles)
 
-	manifest, raw := parseManifest(episode.ManifestURL)
+	manifest, raw, manifestErr := parseManifest(episode.ManifestURL)
+	if manifestErr != nil {
+		return opts, manifestErr
+	}
 	if isOnDemand(manifest) {
 		sets, parseErr := parseOnDemand(raw)
 		if parseErr != nil {

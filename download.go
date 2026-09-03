@@ -34,15 +34,18 @@ func sanitizeFilename(s string) string {
 	return strings.TrimRight(res, " .")
 }
 
+func episodeOutputName(info EpisodeInfo, videoQuality string) string {
+	series := sanitizeFilename(info.EpisodeMetadata.SeriesTitle)
+	name := fmt.Sprintf("%s S%02vE%02v", series, info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
+	title := sanitizeFilename(info.Title)
+	if title != "" && title != series {
+		name += " " + title
+	}
+	return name + " [" + videoQuality + "].mkv"
+}
+
 func episodeOutputFile(info EpisodeInfo, videoQuality string) string {
-	cleanSeriesTitle := sanitizeFilename(info.EpisodeMetadata.SeriesTitle)
-	dir := filepath.Join(outputDir, cleanSeriesTitle)
-	return filepath.Join(dir, fmt.Sprintf("%s S%02vE%02v [%s].mkv",
-		cleanSeriesTitle,
-		info.EpisodeMetadata.SeasonNumber,
-		info.EpisodeMetadata.EpisodeNumber,
-		videoQuality,
-	))
+	return filepath.Join(seriesDirName(info), episodeOutputName(info, videoQuality))
 }
 
 func episodeOutputComplete(path string) bool {
@@ -199,21 +202,29 @@ func buildUrl(base, representationId, file string, partNum *int64) string {
 }
 
 func downloadPart(url string) ([]byte, error) {
+	ctx := downloadContext()
 	maxRetries := 5
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		if ctx.Err() != nil {
+			return nil, errCancelled
+		}
+		if attempt > 0 && !sleepOrCancel(time.Duration(attempt)*2*time.Second) {
+			return nil, errCancelled
 		}
 
-		req, err := http.NewRequest(http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Origin", "https://static.crunchyroll.com")
 		req.Header.Set("Referer", "https://static.crunchyroll.com/")
-		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
-		resp, err := http.DefaultClient.Do(req)
+		req.Header.Set("User-Agent", userAgent)
+		resp, err := mediaClient.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, errCancelled
+			}
 			if attempt < maxRetries-1 {
 				continue
 			}
@@ -230,6 +241,9 @@ func downloadPart(url string) ([]byte, error) {
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, errCancelled
+			}
 			if attempt < maxRetries-1 {
 				continue
 			}
@@ -300,6 +314,10 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (s
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
+				if isCancelled() {
+					errOnce.Do(func() { downloadErr = errCancelled })
+					return
+				}
 				data, err := downloadPart(job.url)
 				if err != nil {
 					errOnce.Do(func() { downloadErr = err })
@@ -312,6 +330,8 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (s
 		}()
 	}
 
+	// The jobs channel is buffered to hold every segment, so this never blocks
+	// even when the workers stop early.
 	for i, item := range timeline {
 		url := buildUrl(*baseUrl, *representationId, *template.Media, &item)
 		jobs <- segmentJob{index: i, url: url}
@@ -321,6 +341,9 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (s
 
 	if downloadErr != nil {
 		return "", downloadErr
+	}
+	if isCancelled() {
+		return "", errCancelled
 	}
 
 	fmt.Println("\nFinished downloading!")
@@ -344,37 +367,50 @@ func downloadParts(baseUrl, representationId *string, set *mpd.AdaptationSet) (s
 	return filename, nil
 }
 
-func downloadSubs(url string) string {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func downloadSubs(url string) (string, error) {
+	req, err := http.NewRequestWithContext(downloadContext(), http.MethodGet, url, nil)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("creating subtitle request: %w", err)
 	}
 	req.Header.Set("Origin", "https://static.crunchyroll.com")
 	req.Header.Set("Referer", "https://static.crunchyroll.com/")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := mediaClient.Do(req)
 	if err != nil {
-		panic(err)
+		if isCancelled() {
+			return "", errCancelled
+		}
+		return "", fmt.Errorf("subtitle request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		panic(err)
+		if isCancelled() {
+			return "", errCancelled
+		}
+		return "", fmt.Errorf("reading subtitles: %w", err)
 	}
 
 	filename := getFilename(nil)
 	file, err := os.Create(filename)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("creating subtitle file: %w", err)
 	}
-	file.Write(body)
-	file.Close()
+	defer file.Close()
 
-	return filename
+	if _, err := file.Write(body); err != nil {
+		return "", fmt.Errorf("writing subtitles: %w", err)
+	}
+
+	return filename, nil
 }
 
 func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang *string, info EpisodeInfo) bool {
+	if isCancelled() {
+		return false
+	}
+
 	outputFile := episodeOutputFile(info, *videoQuality)
 	if existing, ok := findCompleteEpisodeFile(info, *videoQuality); ok {
 		fmt.Printf("Episode %v is already downloaded (%s), skipping...\n", info.EpisodeMetadata.EpisodeNumber, filepath.Base(existing))
@@ -402,7 +438,10 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		if strings.Contains(err.Error(), "TOO_MANY_ACTIVE_STREAMS") && attempt < maxRetries {
 			wait := time.Duration(attempt) * 10 * time.Second
 			fmt.Printf("Too many active streams, waiting %v before retry (%d/%d)...\n", wait, attempt, maxRetries)
-			time.Sleep(wait)
+			if !sleepOrCancel(wait) {
+				fmt.Println("Stopped.")
+				return false
+			}
 			continue
 		}
 
@@ -420,7 +459,12 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 
 	fmt.Printf("Downloading: %s (S%02vE%02v) from %s\n", info.Title, info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, info.EpisodeMetadata.SeriesTitle)
 
-	manifest, rawManifest := parseManifest(episode.ManifestURL)
+	manifest, rawManifest, manifestErr := parseManifest(episode.ManifestURL)
+	if manifestErr != nil {
+		fmt.Printf("! Manifest error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, manifestErr)
+		return false
+	}
+
 	videoSet, audioSet := findAdaptationSets(manifest)
 	if videoSet == nil || audioSet == nil {
 		fmt.Printf("! Could not find video/audio adaptation sets for S%02vE%02v\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
@@ -480,7 +524,11 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 		fmt.Println("Skipping subtitles (audio language matches subtitle language)")
 	} else if subtitles := episode.Subtitles[*subtitlesLang]; subtitles != nil {
 		fmt.Printf("Downloading subtitles for %s language...\n", languageNames[*subtitlesLang])
-		subsFile = downloadSubs(subtitles.URL)
+		subsFile, err = downloadSubs(subtitles.URL)
+		if err != nil {
+			fmt.Printf("! Subtitle download error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
+			return false
+		}
 		fmt.Println("Downloaded subtitles!")
 	}
 
@@ -528,6 +576,14 @@ func downloadEpisode(contentId string, videoQuality, audioQuality, subtitlesLang
 			_ = os.Remove(videoFile)
 			return false
 		}
+	}
+
+	if isCancelled() {
+		fmt.Printf("Stopped before muxing S%02vE%02v.\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber)
+		_ = os.Remove(videoFile)
+		_ = os.Remove(audioFile)
+		_ = os.Remove(subsFile)
+		return false
 	}
 
 	if err := mergeEverything(videoFile, audioFile, subsFile, outputFile, subtitlesLang, info); err != nil {
@@ -586,6 +642,9 @@ func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes 
 
 	runJobs := func(toRun []seasonEpisodeJob) {
 		for _, job := range toRun {
+			if isCancelled() {
+				return
+			}
 			downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info)
 		}
 	}
@@ -593,6 +652,11 @@ func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes 
 	runJobs(toDownload)
 
 	for pass := 1; pass <= seasonRetryPasses; pass++ {
+		if isCancelled() {
+			fmt.Println("Stopped.")
+			return
+		}
+
 		missing := incompleteSeasonJobs(jobs, *videoQuality)
 		if len(missing) == 0 {
 			fmt.Printf("Season %v complete (%v episodes).\n", episodes[0].SeasonNumber, len(jobs))
@@ -602,8 +666,16 @@ func downloadSeason(videoQuality, audioQuality, subtitlesLang *string, episodes 
 		wait := time.Duration(pass) * 15 * time.Second
 		fmt.Printf("\n%v episode(s) missing or incomplete: %s\n", len(missing), formatEpisodeNumbers(missing))
 		fmt.Printf("Waiting %v then retrying (pass %d/%d)...\n\n", wait, pass, seasonRetryPasses)
-		time.Sleep(wait)
+		if !sleepOrCancel(wait) {
+			fmt.Println("Stopped.")
+			return
+		}
 		runJobs(missing)
+	}
+
+	if isCancelled() {
+		fmt.Println("Stopped.")
+		return
 	}
 
 	stillMissing := incompleteSeasonJobs(jobs, *videoQuality)

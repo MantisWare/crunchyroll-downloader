@@ -10,21 +10,25 @@ const configDirName = ".crunchyroll.config"
 const configFileName = "config.json"
 
 type appConfig struct {
-	EtpRt        string `json:"etp_rt"`
-	AudioLang    string `json:"audio_lang"`
-	SubsLang     string `json:"subs_lang"`
-	VideoQuality string `json:"video_quality"`
-	AudioQuality string `json:"audio_quality"`
-	OutputDir    string `json:"output_dir"`
+	EtpRt               string `json:"etp_rt"`
+	AudioLang           string `json:"audio_lang"`
+	SubsLang            string `json:"subs_lang"`
+	VideoQuality        string `json:"video_quality"`
+	AudioQuality        string `json:"audio_quality"`
+	OutputDir           string `json:"output_dir"`
+	ConvertVideoQuality string `json:"convert_video_quality"`
+	ConvertAudioQuality string `json:"convert_audio_quality"`
 }
 
 func defaultAppConfig() appConfig {
 	return appConfig{
-		AudioLang:    "ja-JP",
-		SubsLang:     "en-US",
-		VideoQuality: "1080p",
-		AudioQuality: "192k",
-		OutputDir:    ".",
+		AudioLang:           "ja-JP",
+		SubsLang:            "en-US",
+		VideoQuality:        "1080p",
+		AudioQuality:        "192k",
+		OutputDir:           ".",
+		ConvertVideoQuality: "720p",
+		ConvertAudioQuality: "128k",
 	}
 }
 
@@ -85,6 +89,12 @@ func normalizeAppConfig(cfg appConfig) appConfig {
 	}
 	if cfg.OutputDir == "" {
 		cfg.OutputDir = "."
+	}
+	if cfg.ConvertVideoQuality == "" {
+		cfg.ConvertVideoQuality = "720p"
+	}
+	if cfg.ConvertAudioQuality == "" {
+		cfg.ConvertAudioQuality = "128k"
 	}
 	return cfg
 }
