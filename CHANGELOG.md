@@ -33,6 +33,7 @@
 - Fixed saved conversion qualities being overwritten with defaults on launch, because the Download tab's selects persisted settings before the Convert tab was built
 - Fixed the download options overlapping the episode and progress panes after a Lookup; revealing a hidden container does not trigger a Fyne relayout, so the panes kept their old geometry until the window was resized
 - Desktop UI: the window size is saved to `~/.crunchyroll.config/config.json` and restored on the next launch instead of always reopening at 1040x820
+- Fixed segment-template downloads producing a grey/garbled picture: they still used `DecryptMP4Auto`, which applies the license's first content key, so titles with a separate key per track decrypted the video with the audio key. They now use the same KID-matching decryption as the on-demand path
 
 ## 1.3.0
 
