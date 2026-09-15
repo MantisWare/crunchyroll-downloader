@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	widevine "github.com/iyear/gowidevine"
 	"github.com/unki2aut/go-mpd"
 )
 
@@ -117,7 +118,7 @@ func parseByteRange(r string) (start, end int64, err error) {
 	return start, end, nil
 }
 
-func selectOnDemandRepresentation(set onDemandAdaptationSet, quality string, isVideo bool) (onDemandRepresentation, bool) {
+func selectOnDemandRepresentation(env jobEnv, set onDemandAdaptationSet, quality string, isVideo bool) (onDemandRepresentation, bool) {
 	if len(set.Representations) == 0 {
 		return onDemandRepresentation{}, false
 	}
@@ -155,12 +156,12 @@ func selectOnDemandRepresentation(set onDemandAdaptationSet, quality string, isV
 	if isVideo {
 		kind = "Video"
 	}
-	fmt.Printf("%s quality %s not found, deferring to %s\n", kind, quality, first.ID)
+	jobPrintf(env, "%s quality %s not found, deferring to %s\n", kind, quality, first.ID)
 	return first, true
 }
 
-func onDemandRequest(url, byteRange string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(downloadContext(), http.MethodGet, url, nil)
+func onDemandRequest(env jobEnv, url, byteRange string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(env.context(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +173,7 @@ func onDemandRequest(url, byteRange string) (*http.Response, error) {
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := mediaClient.Do(req)
 	if err != nil {
-		if isCancelled() {
+		if env.cancelled() {
 			return nil, errCancelled
 		}
 		return nil, err
@@ -184,8 +185,8 @@ func onDemandRequest(url, byteRange string) (*http.Response, error) {
 	return resp, nil
 }
 
-func downloadRange(url string, start, end int64) ([]byte, error) {
-	resp, err := onDemandRequest(url, fmt.Sprintf("bytes=%d-%d", start, end))
+func downloadRange(env jobEnv, url string, start, end int64) ([]byte, error) {
+	resp, err := onDemandRequest(env, url, fmt.Sprintf("bytes=%d-%d", start, end))
 	if err != nil {
 		return nil, err
 	}
@@ -193,15 +194,15 @@ func downloadRange(url string, start, end int64) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func streamRange(w io.Writer, url string, start int64) error {
-	resp, err := onDemandRequest(url, fmt.Sprintf("bytes=%d-", start))
+func streamRange(env jobEnv, w io.Writer, url string, start int64) error {
+	resp, err := onDemandRequest(env, url, fmt.Sprintf("bytes=%d-", start))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	if _, err = io.Copy(w, resp.Body); err != nil {
-		if isCancelled() {
+		if env.cancelled() {
 			return errCancelled
 		}
 		return err
@@ -223,7 +224,7 @@ func tempMediaFile(isVideo bool) string {
 	return name
 }
 
-func downloadOnDemandAdaptation(sets []onDemandAdaptationSet, isVideo bool, quality string) (string, error) {
+func downloadOnDemandAdaptation(env jobEnv, sets []onDemandAdaptationSet, isVideo bool, quality string, licenseKeys []*widevine.Key) (string, error) {
 	var chosen *onDemandAdaptationSet
 	for i := range sets {
 		if sets[i].IsVideo == isVideo {
@@ -239,7 +240,7 @@ func downloadOnDemandAdaptation(sets []onDemandAdaptationSet, isVideo bool, qual
 		return "", fmt.Errorf("no %s adaptation set in on-demand manifest", kind)
 	}
 
-	rep, ok := selectOnDemandRepresentation(*chosen, quality, isVideo)
+	rep, ok := selectOnDemandRepresentation(env, *chosen, quality, isVideo)
 	if !ok {
 		kind := "audio"
 		if isVideo {
@@ -248,12 +249,12 @@ func downloadOnDemandAdaptation(sets []onDemandAdaptationSet, isVideo bool, qual
 		return "", fmt.Errorf("no %s representation available", kind)
 	}
 
-	return downloadOnDemandParts(rep, isVideo)
+	return downloadOnDemandParts(env, rep, isVideo, licenseKeys)
 }
 
 // downloadOnDemandParts downloads a single-file representation: init range for
 // key selection, then the remainder of the file streamed to disk, then decrypts.
-func downloadOnDemandParts(rep onDemandRepresentation, isVideo bool) (string, error) {
+func downloadOnDemandParts(env jobEnv, rep onDemandRepresentation, isVideo bool, licenseKeys []*widevine.Key) (string, error) {
 	if rep.BaseURL == "" {
 		return "", fmt.Errorf("representation %s has no BaseURL", rep.ID)
 	}
@@ -265,7 +266,7 @@ func downloadOnDemandParts(rep onDemandRepresentation, isVideo bool) (string, er
 	if err != nil {
 		return "", fmt.Errorf("parse init range: %w", err)
 	}
-	initData, err := downloadRange(rep.BaseURL, initStart, initEnd)
+	initData, err := downloadRange(env, rep.BaseURL, initStart, initEnd)
 	if err != nil {
 		return "", fmt.Errorf("download init segment: %w", err)
 	}
@@ -295,11 +296,11 @@ func downloadOnDemandParts(rep onDemandRepresentation, isVideo bool) (string, er
 	if isVideo {
 		kind = "video"
 	}
-	fmt.Printf("Downloading %s file...\n", kind)
-	if err = streamRange(encFile, rep.BaseURL, indexStart); err != nil {
+	jobPrintf(env, "Downloading %s file...\n", kind)
+	if err = streamRange(env, encFile, rep.BaseURL, indexStart); err != nil {
 		return "", err
 	}
-	fmt.Println("Finished downloading!")
+	jobPrintln(env, "Finished downloading!")
 
 	if _, err = encFile.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("rewinding %s: %w", encPath, err)
@@ -311,7 +312,7 @@ func downloadOnDemandParts(rep onDemandRepresentation, isVideo bool) (string, er
 	}
 	defer file.Close()
 
-	if err = decryptMP4(initData, encFile, keys, file); err != nil {
+	if err = decryptMP4(initData, encFile, licenseKeys, file); err != nil {
 		return "", fmt.Errorf("decryptMP4: %w", err)
 	}
 

@@ -27,6 +27,7 @@ OPTIONS
   -etp-rt string       The "etp_rt" cookie value from your Crunchyroll account (required)
   -browser-login       Open a browser to sign in and save the required cookie
   -audio-lang string   Audio language / dub (default "ja-JP")
+  -dub-fallback        Download the default dub when the selected one is missing
   -subs-lang string    Subtitles language (default "en-US")
   -video-quality string Video quality: 1080p, 720p, 480p, 360p (default "1080p")
   -audio-quality string Audio quality: 192k, 128k, 96k (default "192k")
@@ -100,16 +101,17 @@ func processUrl(url string) {
 	}
 
 	if parsed.Kind == kindWatch {
-		info := getEpisodeInfo(parsed.ID)
-		contentID, ok := resolveWatchEpisodeID(parsed.ID, info, *audioLang)
+		info := getEpisodeInfo(parsed.ID, *audioLang)
+		contentID, audioLocale, ok := resolveWatchEpisodeID(parsed.ID, info, *audioLang, *dubFallback)
 		if !ok {
 			return
 		}
-		downloadEpisode(contentID, videoQuality, audioQuality, subtitlesLang, info)
+		info.EpisodeMetadata.AudioLocale = audioLocale
+		downloadEpisode(defaultJobEnv(), contentID, info)
 		return
 	}
 
-	seasons := getSeasons(parsed.ID)
+	seasons := getSeasons(parsed.ID, *audioLang)
 
 	if *seasonNumber != 0 {
 		episodes, ok := resolveSeasonEpisodes(seasons, *seasonNumber, *audioLang)
@@ -119,7 +121,7 @@ func processUrl(url string) {
 			}
 			return
 		}
-		downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
+		downloadSeason(defaultJobEnv(), episodes)
 		return
 	}
 
@@ -130,7 +132,7 @@ func processUrl(url string) {
 		if !ok || len(episodes) == 0 {
 			continue
 		}
-		downloadSeason(videoQuality, audioQuality, subtitlesLang, episodes)
+		downloadSeason(defaultJobEnv(), episodes)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 // mergeEverything merges audio, video and subtitles in a single MKV container
-func mergeEverything(videoFile, audioFile, subsFile, outputFile string, subtitlesLang *string, info EpisodeInfo) error {
+func mergeEverything(env jobEnv, videoFile, audioFile, subsFile, outputFile string, info EpisodeInfo) error {
 	args := []string{
 		"-i", videoFile,
 		"-i", audioFile,
@@ -17,7 +17,7 @@ func mergeEverything(videoFile, audioFile, subsFile, outputFile string, subtitle
 		args = append(args,
 			"-i", subsFile,
 			"-c:s", "copy",
-			"-metadata:s:s:0", fmt.Sprintf("title=%s", languageNames[*subtitlesLang]),
+			"-metadata:s:s:0", fmt.Sprintf("title=%s", languageNames[env.subtitlesLang]),
 		)
 	}
 
@@ -30,10 +30,10 @@ func mergeEverything(videoFile, audioFile, subsFile, outputFile string, subtitle
 		outputFile,
 	)
 
-	cmd := exec.CommandContext(downloadContext(), "ffmpeg", args...)
+	cmd := exec.CommandContext(env.context(), "ffmpeg", args...)
 	if err := cmd.Run(); err != nil {
 		_ = os.Remove(outputFile)
-		if isCancelled() {
+		if env.cancelled() {
 			return errCancelled
 		}
 		return fmt.Errorf("ffmpeg mux: %w", err)
@@ -43,6 +43,6 @@ func mergeEverything(videoFile, audioFile, subsFile, outputFile string, subtitle
 	_ = os.Remove(audioFile)
 	_ = os.Remove(subsFile)
 
-	fmt.Printf("\nDownload finished! Output file: %s\n\n", outputFile)
+	jobPrintf(env, "\nDownload finished! Output file: %s\n\n", outputFile)
 	return nil
 }

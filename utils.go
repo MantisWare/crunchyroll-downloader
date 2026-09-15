@@ -43,6 +43,13 @@ func sortedLanguageCodes() []string {
 	return codes
 }
 
+func audioName(code string) string {
+	if name := languageNames[code]; name != "" {
+		return name
+	}
+	return code
+}
+
 func languageLabel(code string) string {
 	name := languageNames[code]
 	if name == "" {

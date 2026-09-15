@@ -5,9 +5,12 @@ import (
 	"slices"
 )
 
-func resolveWatchEpisodeID(contentID string, info EpisodeInfo, requestedAudio string) (string, bool) {
+// resolveWatchEpisodeID returns the content ID to download and the audio
+// language it carries, which is the requested one unless a dub fallback was
+// needed.
+func resolveWatchEpisodeID(contentID string, info EpisodeInfo, requestedAudio string, allowFallback bool) (string, string, bool) {
 	if info.EpisodeMetadata.AudioLocale == requestedAudio {
-		return contentID, true
+		return contentID, requestedAudio, true
 	}
 
 	if len(info.EpisodeMetadata.Versions) > 0 {
@@ -15,40 +18,51 @@ func resolveWatchEpisodeID(contentID string, info EpisodeInfo, requestedAudio st
 			return v != nil && v.AudioLocale == requestedAudio
 		})
 		if correctGuidI != -1 {
-			return info.EpisodeMetadata.Versions[correctGuidI].GUID, true
+			return info.EpisodeMetadata.Versions[correctGuidI].GUID, requestedAudio, true
 		}
 	}
 
 	if info.EpisodeMetadata.SeasonID == "" {
-		printWatchUnavailableDubs(info, requestedAudio)
-		return "", false
+		return watchDubFallback(episodeInfoToSeasonEpisode(contentID, info), info, requestedAudio, allowFallback)
 	}
 
 	fmt.Printf("Version list unavailable, looking up %s dub via season...\n", requestedAudio)
-	episodes := getSeasonEpisodes(info.EpisodeMetadata.SeasonID)
+	episodes := getSeasonEpisodes(info.EpisodeMetadata.SeasonID, requestedAudio)
 	epIdx := slices.IndexFunc(episodes, func(e SeasonEpisode) bool {
 		return e.EpisodeNumber == info.EpisodeMetadata.EpisodeNumber
 	})
 	if epIdx == -1 {
-		printWatchUnavailableDubs(info, requestedAudio)
-		return "", false
+		return watchDubFallback(episodeInfoToSeasonEpisode(contentID, info), info, requestedAudio, allowFallback)
 	}
 
 	ep := episodes[epIdx]
 	if ep.AudioLocale == requestedAudio {
-		return ep.ID, true
+		return ep.ID, requestedAudio, true
 	}
 	if len(ep.Versions) > 0 {
 		dubIdx := slices.IndexFunc(ep.Versions, func(v *DubVersion) bool {
 			return v != nil && v.AudioLocale == requestedAudio
 		})
 		if dubIdx != -1 {
-			return ep.Versions[dubIdx].GUID, true
+			return ep.Versions[dubIdx].GUID, requestedAudio, true
+		}
+	}
+
+	return watchDubFallback(ep, info, requestedAudio, allowFallback)
+}
+
+// watchDubFallback resolves a single episode whose requested dub is missing,
+// either by using the default audio or by reporting the episode as skipped.
+func watchDubFallback(candidate SeasonEpisode, info EpisodeInfo, requestedAudio string, allowFallback bool) (string, string, bool) {
+	if allowFallback {
+		if id, locale, ok := fallbackDub(candidate); ok {
+			fmt.Printf("! Episode has no %s dub, downloading %s instead...\n", requestedAudio, languageLabel(locale))
+			return id, locale, true
 		}
 	}
 
 	printWatchUnavailableDubs(info, requestedAudio)
-	return "", false
+	return "", "", false
 }
 
 func printWatchUnavailableDubs(info EpisodeInfo, requestedAudio string) {
@@ -64,11 +78,7 @@ func printWatchUnavailableDubs(info EpisodeInfo, requestedAudio string) {
 		if i > 0 {
 			fmt.Print(", ")
 		}
-		name := languageNames[v.AudioLocale]
-		if name == "" {
-			name = v.AudioLocale
-		}
-		fmt.Print(name)
+		fmt.Print(audioName(v.AudioLocale))
 	}
 	fmt.Println()
 }

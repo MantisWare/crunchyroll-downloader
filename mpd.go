@@ -10,8 +10,8 @@ import (
 	"github.com/unki2aut/go-mpd"
 )
 
-func parseManifest(url string) (*mpd.MPD, []byte, error) {
-	req, err := http.NewRequestWithContext(downloadContext(), http.MethodGet, url, nil)
+func parseManifest(env jobEnv, url string) (*mpd.MPD, []byte, error) {
+	req, err := http.NewRequestWithContext(env.context(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating manifest request: %w", err)
 	}
@@ -19,7 +19,7 @@ func parseManifest(url string) (*mpd.MPD, []byte, error) {
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := mediaClient.Do(req)
 	if err != nil {
-		if isCancelled() {
+		if env.cancelled() {
 			return nil, nil, errCancelled
 		}
 		return nil, nil, fmt.Errorf("manifest request: %w", err)
@@ -28,14 +28,14 @@ func parseManifest(url string) (*mpd.MPD, []byte, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		if isCancelled() {
+		if env.cancelled() {
 			return nil, nil, errCancelled
 		}
 		return nil, nil, fmt.Errorf("reading manifest: %w", err)
 	}
 	manifest := new(mpd.MPD)
 	if err := manifest.Decode(body); err != nil {
-		fmt.Printf("Warning: failed to parse MPD: %v\n", err)
+		jobPrintf(env, "Warning: failed to parse MPD: %v\n", err)
 	}
 
 	return manifest, body, nil
