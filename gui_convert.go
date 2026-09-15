@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -20,72 +21,141 @@ import (
 var convertVideoQualities = []string{"1080p", "720p", "480p", "360p"}
 var convertAudioQualities = []string{"320k", "256k", "192k", "128k", "96k"}
 
-func (g *guiApp) buildConvert(cfg appConfig) {
-	g.convertSourceEntry = widget.NewMultiLineEntry()
-	g.convertSourceEntry.Disable()
-	g.convertSourceEntry.SetMinRowsVisible(4)
-	g.convertSourceEntry.SetPlaceHolder("Drop a video file or folder here, or use one of the buttons below.")
+type convertSession struct {
+	app   *guiApp
+	tab   *container.TabItem
+	seq   int
+	run   cancellable
+	state tabRunState
 
-	// The saved quality is applied before the handlers are attached: SetSelected
-	// fires OnChanged straight away, and these handlers touch widgets that are
-	// still nil this early in the build.
-	g.convertVideoSel = widget.NewSelect(convertVideoQualities, nil)
-	g.convertVideoSel.SetSelected(pickPreferred(convertVideoQualities, cfg.ConvertVideoQuality))
+	sourceEntry   *widget.Entry
+	videoSel      *widget.Select
+	audioSel      *widget.Select
+	status        *widget.Label
+	logEntry      *widget.Entry
+	logRaw        string
+	progress      *widget.ProgressBar
+	convertBtn    *widget.Button
+	stopBtn       *widget.Button
+	clearBtn      *widget.Button
+	convertPaths  []string
+	convertFolder string
+	tabTitle      string
 
-	g.convertAudioSel = widget.NewSelect(convertAudioQualities, nil)
-	g.convertAudioSel.SetSelected(pickPreferred(convertAudioQualities, cfg.ConvertAudioQuality))
+	mu     sync.Mutex
+	active bool
+	busy   bool
+}
 
-	g.convertStatus = widget.NewLabel("Choose a video file or folder to convert.")
-	g.convertStatus.Wrapping = fyne.TextWrapWord
+func (s *convertSession) stillOpen() bool {
+	if s.app == nil || s.tab == nil {
+		return false
+	}
+	return s.app.sessionFor(s.tab) == s
+}
 
-	g.convertLogEntry = widget.NewMultiLineEntry()
-	g.convertLogEntry.Disable()
-	g.convertLogEntry.Wrapping = fyne.TextWrapWord
-	g.convertLogEntry.SetPlaceHolder("FFmpeg conversion output appears here…")
+func (s *convertSession) kind() tabKind { return tabKindConvert }
 
-	g.convertProgress = widget.NewProgressBar()
-	g.convertProgress.Hide()
+func (s *convertSession) tabItem() *container.TabItem { return s.tab }
 
-	g.convertBtn = widget.NewButtonWithIcon("Convert", theme.MediaVideoIcon(), func() {
-		jobs, err := g.currentConversionJobs()
+func (s *convertSession) isBusy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy || s.active
+}
+
+func (s *convertSession) cancel() { s.run.request() }
+
+func (s *convertSession) runState() tabRunState { return s.state }
+
+func (s *convertSession) title() string {
+	if s.tabTitle != "" {
+		return s.tabTitle
+	}
+	return numberedSessionTitle(tabKindConvert, s.seq)
+}
+
+func (g *guiApp) newConvertSession() *convertSession {
+	g.convertSeq++
+	s := &convertSession{
+		app: g,
+		seq: g.convertSeq,
+	}
+	s.build()
+	return s
+}
+
+func (s *convertSession) build() {
+	s.sourceEntry = widget.NewMultiLineEntry()
+	s.sourceEntry.Disable()
+	s.sourceEntry.SetMinRowsVisible(4)
+	s.sourceEntry.SetPlaceHolder("Drop a video file or folder here, or use one of the buttons below.")
+
+	s.videoSel = widget.NewSelect(convertVideoQualities, nil)
+	s.videoSel.SetSelected(pickPreferred(convertVideoQualities, s.app.defaults.convertVideo))
+
+	s.audioSel = widget.NewSelect(convertAudioQualities, nil)
+	s.audioSel.SetSelected(pickPreferred(convertAudioQualities, s.app.defaults.convertAudio))
+
+	s.status = widget.NewLabel("Choose a video file or folder to convert.")
+	s.status.Wrapping = fyne.TextWrapWord
+
+	s.logEntry = widget.NewMultiLineEntry()
+	s.logEntry.Disable()
+	s.logEntry.Wrapping = fyne.TextWrapWord
+	s.logEntry.SetPlaceHolder("FFmpeg conversion output appears here…")
+
+	s.progress = widget.NewProgressBar()
+	s.progress.Hide()
+
+	s.convertBtn = widget.NewButtonWithIcon("Convert", theme.MediaVideoIcon(), func() {
+		jobs, err := s.currentConversionJobs()
 		if err != nil {
-			g.convertStatus.SetText(err.Error())
+			s.status.SetText(err.Error())
 			return
 		}
-		videoQuality := g.convertVideoQuality()
-		audioQuality := g.convertAudioQuality()
-		go g.runConversion(jobs, videoQuality, audioQuality)
+		videoQuality := s.convertVideoQuality()
+		audioQuality := s.convertAudioQuality()
+		go s.runConversion(jobs, videoQuality, audioQuality)
 	})
-	g.convertBtn.Importance = widget.HighImportance
-	g.convertBtn.Disable()
+	s.convertBtn.Importance = widget.HighImportance
+	s.convertBtn.Disable()
 
-	g.convertStopBtn = widget.NewButtonWithIcon("Stop", theme.CancelIcon(), func() {
-		requestCancel()
-		g.convertStopBtn.Disable()
-		g.convertStatus.SetText("Stopping conversion…")
+	s.stopBtn = widget.NewButtonWithIcon("Stop", theme.CancelIcon(), func() {
+		s.run.request()
+		s.stopBtn.Disable()
+		s.status.SetText("Stopping conversion…")
 	})
-	g.convertStopBtn.Importance = widget.DangerImportance
-	g.convertStopBtn.Disable()
+	s.stopBtn.Importance = widget.DangerImportance
+	s.stopBtn.Disable()
 
-	g.convertClearBtn = widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
-		g.clearConversion()
+	s.clearBtn = widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
+		s.clearConversion()
 	})
 
-	g.convertVideoSel.OnChanged = func(_ string) {
-		g.persistSettings()
-		// The folder output path carries the quality tag, so it has to be redrawn.
-		g.refreshConvertSource()
+	s.videoSel.OnChanged = func(v string) {
+		if s.app.ignoreSelect {
+			return
+		}
+		s.app.defaults.convertVideo = v
+		s.app.persistSettings()
+		s.refreshConvertSource()
+		s.app.refreshTabChrome(s)
 	}
-	g.convertAudioSel.OnChanged = func(_ string) {
-		g.persistSettings()
+	s.audioSel.OnChanged = func(v string) {
+		if s.app.ignoreSelect {
+			return
+		}
+		s.app.defaults.convertAudio = v
+		s.app.persistSettings()
 	}
 }
 
-func (g *guiApp) convertTabContent() fyne.CanvasObject {
+func (s *convertSession) content() fyne.CanvasObject {
 	selectFile := widget.NewButtonWithIcon("Choose file", theme.FileIcon(), func() {
 		picker := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil {
-				g.convertStatus.SetText(fmt.Sprintf("Could not open file picker: %s", err))
+				s.status.SetText(fmt.Sprintf("Could not open file picker: %s", err))
 				return
 			}
 			if reader == nil {
@@ -93,36 +163,36 @@ func (g *guiApp) convertTabContent() fyne.CanvasObject {
 			}
 			path := reader.URI().Path()
 			_ = reader.Close()
-			g.setConversionFiles([]string{path})
-		}, g.win)
+			s.setConversionFiles([]string{path})
+		}, s.app.win)
 		picker.Show()
 	})
 
 	selectFolder := widget.NewButtonWithIcon("Choose folder", theme.FolderOpenIcon(), func() {
 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err != nil {
-				g.convertStatus.SetText(fmt.Sprintf("Could not open folder picker: %s", err))
+				s.status.SetText(fmt.Sprintf("Could not open folder picker: %s", err))
 				return
 			}
 			if uri == nil {
 				return
 			}
-			g.setConversionFolder(uri.Path())
-		}, g.win)
+			s.setConversionFolder(uri.Path())
+		}, s.app.win)
 	})
 
 	dropHelp := widget.NewCard(
 		"Input",
 		"Drop one or more video files, or a folder, anywhere on this tab.",
 		container.NewVBox(
-			g.convertSourceEntry,
-			container.NewHBox(selectFile, selectFolder, g.convertClearBtn),
+			s.sourceEntry,
+			container.NewHBox(selectFile, selectFolder, s.clearBtn),
 		),
 	)
 
 	options := widget.NewForm(
-		widget.NewFormItem("Video quality", g.convertVideoSel),
-		widget.NewFormItem("Audio quality", g.convertAudioSel),
+		widget.NewFormItem("Video quality", s.videoSel),
+		widget.NewFormItem("Audio quality", s.audioSel),
 	)
 
 	logFloor := canvas.NewRectangle(color.Transparent)
@@ -132,16 +202,16 @@ func (g *guiApp) convertTabContent() fyne.CanvasObject {
 		container.NewBorder(
 			widget.NewLabelWithStyle("FFmpeg output", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			nil, nil, nil,
-			g.convertLogEntry,
+			s.logEntry,
 		),
 	)
 
 	bottom := container.NewVBox(
-		g.convertProgress,
+		s.progress,
 		container.NewBorder(
 			nil, nil,
-			g.convertStatus,
-			container.NewHBox(g.convertStopBtn, g.convertBtn),
+			s.status,
+			container.NewHBox(s.stopBtn, s.convertBtn),
 		),
 	)
 
@@ -154,8 +224,8 @@ func (g *guiApp) convertTabContent() fyne.CanvasObject {
 	))
 }
 
-func (g *guiApp) handleDroppedURIs(uris []fyne.URI) {
-	if len(uris) == 0 || g.isConversionActive() {
+func (s *convertSession) handleDroppedURIs(uris []fyne.URI) {
+	if len(uris) == 0 || s.isConversionActive() {
 		return
 	}
 
@@ -172,17 +242,34 @@ func (g *guiApp) handleDroppedURIs(uris []fyne.URI) {
 
 	info, err := os.Stat(paths[0])
 	if err != nil {
-		g.convertStatus.SetText(fmt.Sprintf("Could not read dropped item: %s", err))
+		s.status.SetText(fmt.Sprintf("Could not read dropped item: %s", err))
 		return
 	}
 	if info.IsDir() {
-		g.setConversionFolder(paths[0])
+		s.setConversionFolder(paths[0])
 		return
 	}
-	g.setConversionFiles(paths)
+	s.setConversionFiles(paths)
 }
 
-func (g *guiApp) setConversionFiles(paths []string) {
+func (s *convertSession) updateTabTitle() {
+	desired := ""
+	switch {
+	case s.convertFolder != "":
+		desired = filepath.Base(s.convertFolder)
+	case len(s.convertPaths) == 1:
+		desired = filepath.Base(s.convertPaths[0])
+	case len(s.convertPaths) > 1:
+		desired = fmt.Sprintf("%d files", len(s.convertPaths))
+	}
+	if desired == "" {
+		s.tabTitle = ""
+		return
+	}
+	s.tabTitle = uniqueTitle(truncateTitle(desired, tabTitleMaxRunes), s.app.otherTitles(s.tab))
+}
+
+func (s *convertSession) setConversionFiles(paths []string) {
 	supported := make([]string, 0, len(paths))
 	for _, path := range paths {
 		info, err := os.Stat(path)
@@ -191,61 +278,65 @@ func (g *guiApp) setConversionFiles(paths []string) {
 		}
 	}
 
-	g.convertFolder = ""
-	g.convertPaths = supported
-	g.refreshConvertSource()
+	s.convertFolder = ""
+	s.convertPaths = supported
+	s.refreshConvertSource()
+	s.updateTabTitle()
+	s.app.refreshTabChrome(s)
 	if len(supported) == 0 {
-		g.convertStatus.SetText("No supported video files were selected.")
+		s.status.SetText("No supported video files were selected.")
 		return
 	}
-	g.convertStatus.SetText(fmt.Sprintf("%d file(s) ready to convert.", len(supported)))
+	s.status.SetText(fmt.Sprintf("%d file(s) ready to convert.", len(supported)))
 }
 
-func (g *guiApp) setConversionFolder(path string) {
-	g.convertFolder = filepath.Clean(path)
-	g.convertPaths = nil
-	g.refreshConvertSource()
+func (s *convertSession) setConversionFolder(path string) {
+	s.convertFolder = filepath.Clean(path)
+	s.convertPaths = nil
+	s.refreshConvertSource()
+	s.updateTabTitle()
+	s.app.refreshTabChrome(s)
 
-	jobs, err := g.currentConversionJobs()
+	jobs, err := s.currentConversionJobs()
 	if err != nil {
-		g.convertStatus.SetText(err.Error())
+		s.status.SetText(err.Error())
 		return
 	}
-	g.convertStatus.SetText(fmt.Sprintf("%d video file(s) found in the folder.", len(jobs)))
+	s.status.SetText(fmt.Sprintf("%d video file(s) found in the folder.", len(jobs)))
 }
 
-func (g *guiApp) refreshConvertSource() {
+func (s *convertSession) refreshConvertSource() {
 	switch {
-	case g.convertFolder != "":
-		output := filepath.Join(g.convertFolder, "converted_"+g.convertVideoQuality())
-		g.convertSourceEntry.SetText(fmt.Sprintf("Folder: %s\nOutput: %s", g.convertFolder, output))
-	case len(g.convertPaths) > 0:
-		g.convertSourceEntry.SetText(strings.Join(g.convertPaths, "\n"))
+	case s.convertFolder != "":
+		output := filepath.Join(s.convertFolder, "converted_"+s.convertVideoQuality())
+		s.sourceEntry.SetText(fmt.Sprintf("Folder: %s\nOutput: %s", s.convertFolder, output))
+	case len(s.convertPaths) > 0:
+		s.sourceEntry.SetText(strings.Join(s.convertPaths, "\n"))
 	default:
-		g.convertSourceEntry.SetText("")
+		s.sourceEntry.SetText("")
 	}
 
-	if g.convertFolder != "" || len(g.convertPaths) > 0 {
-		g.convertBtn.Enable()
+	if s.convertFolder != "" || len(s.convertPaths) > 0 {
+		s.convertBtn.Enable()
 	} else {
-		g.convertBtn.Disable()
+		s.convertBtn.Disable()
 	}
 }
 
-func (g *guiApp) currentConversionJobs() ([]conversionJob, error) {
-	videoQuality := g.convertVideoQuality()
-	if g.convertFolder != "" {
-		jobs, err := conversionJobsForFolder(g.convertFolder, videoQuality)
+func (s *convertSession) currentConversionJobs() ([]conversionJob, error) {
+	videoQuality := s.convertVideoQuality()
+	if s.convertFolder != "" {
+		jobs, err := conversionJobsForFolder(s.convertFolder, videoQuality)
 		if err != nil {
 			return nil, err
 		}
 		if len(jobs) == 0 {
-			return nil, fmt.Errorf("no supported video files found in %s", g.convertFolder)
+			return nil, fmt.Errorf("no supported video files found in %s", s.convertFolder)
 		}
 		return jobs, nil
 	}
 
-	jobs, err := conversionJobsForFiles(g.convertPaths, videoQuality)
+	jobs, err := conversionJobsForFiles(s.convertPaths, videoQuality)
 	if err != nil {
 		return nil, err
 	}
@@ -255,58 +346,71 @@ func (g *guiApp) currentConversionJobs() ([]conversionJob, error) {
 	return jobs, nil
 }
 
-func (g *guiApp) runConversion(jobs []conversionJob, videoQuality, audioQuality string) {
-	g.setConvertBusy(true)
-	defer g.setConvertBusy(false)
+func (s *convertSession) runConversion(jobs []conversionJob, videoQuality, audioQuality string) {
+	s.setConvertBusy(true)
+	defer s.setConvertBusy(false)
 
-	beginCancellable()
-	defer endCancellable()
+	s.run.begin()
+	defer s.run.end()
 
-	g.setConversionActive(true)
-	defer g.setConversionActive(false)
+	s.setConversionActive(true)
+	defer s.setConversionActive(false)
+
+	env := jobEnv{
+		ctx: s.run.context(),
+		log: sessionLogWriter{append: s.appendLog},
+	}
 
 	fyne.Do(func() {
-		g.convertLogRaw = ""
-		g.convertLogEntry.SetText("")
-		g.convertProgress.SetValue(0)
-		g.convertProgress.Show()
-		g.convertStopBtn.Enable()
+		if !s.stillOpen() {
+			return
+		}
+		s.state = tabRunning
+		s.app.refreshTabChrome(s)
+		s.logRaw = ""
+		s.logEntry.SetText("")
+		s.progress.SetValue(0)
+		s.progress.Show()
+		s.stopBtn.Enable()
 	})
 
 	completed := 0
 	failed := 0
 	for index, job := range jobs {
-		if isCancelled() {
+		if env.cancelled() {
 			break
 		}
 
-		g.setConvertStatus(fmt.Sprintf(
+		s.setConvertStatus(fmt.Sprintf(
 			"Converting %s (%d of %d)…",
 			filepath.Base(job.Input),
 			index+1,
 			len(jobs),
 		))
-		fmt.Printf("\nConverting: %s\nOutput: %s\n", job.Input, job.Output)
+		jobPrintf(env, "\nConverting: %s\nOutput: %s\n", job.Input, job.Output)
 
-		err := convertVideo(job, videoQuality, audioQuality)
+		err := convertVideo(env, job, videoQuality, audioQuality)
 		if err != nil {
-			if isCancelled() {
+			if env.cancelled() {
 				break
 			}
 			failed++
-			fmt.Printf("Failed: %s\n", err)
+			jobPrintf(env, "Failed: %s\n", err)
 		} else {
 			completed++
-			fmt.Printf("Done: %s\n", job.Output)
+			jobPrintf(env, "Done: %s\n", job.Output)
 		}
 
 		progress := float64(index+1) / float64(len(jobs))
 		fyne.Do(func() {
-			g.convertProgress.SetValue(progress)
+			if !s.stillOpen() {
+				return
+			}
+			s.progress.SetValue(progress)
 		})
 	}
 
-	stopped := isCancelled()
+	stopped := env.cancelled()
 	message := fmt.Sprintf("Converted %d of %d file(s).", completed, len(jobs))
 	if failed > 0 {
 		message = fmt.Sprintf("Converted %d of %d file(s); %d failed.", completed, len(jobs), failed)
@@ -315,86 +419,108 @@ func (g *guiApp) runConversion(jobs []conversionJob, videoQuality, audioQuality 
 		message = fmt.Sprintf("Stopped after converting %d of %d file(s).", completed, len(jobs))
 	}
 
-	fmt.Println(message)
-	g.setConvertStatus(message)
+	jobPrintln(env, message)
+	s.setConvertStatus(message)
 	fyne.Do(func() {
-		g.convertStopBtn.Disable()
+		if !s.stillOpen() {
+			return
+		}
+		s.stopBtn.Disable()
+		if stopped {
+			s.state = tabStopped
+		} else {
+			s.state = tabComplete
+		}
+		s.app.refreshTabChrome(s)
 		title := "Conversion complete"
 		if stopped {
 			title = "Conversion stopped"
 		}
-		dialog.ShowInformation(title, message, g.win)
+		if s.app.tabs != nil && s.app.tabs.Selected() == s.tab {
+			dialog.ShowInformation(title, message, s.app.win)
+		}
 	})
 }
 
-func (g *guiApp) setConvertBusy(busy bool) {
+func (s *convertSession) setConvertBusy(busy bool) {
+	s.mu.Lock()
+	s.busy = busy
+	s.mu.Unlock()
+
 	fyne.Do(func() {
+		if !s.stillOpen() {
+			return
+		}
 		if busy {
-			g.convertBtn.Disable()
-			g.convertClearBtn.Disable()
-			g.lookupBtn.Disable()
-			g.dlBtn.Disable()
-			g.resetBtn.Disable()
+			s.convertBtn.Disable()
+			s.clearBtn.Disable()
 			return
 		}
 
-		g.convertClearBtn.Enable()
-		g.resetBtn.Enable()
-		if g.convertFolder != "" || len(g.convertPaths) > 0 {
-			g.convertBtn.Enable()
-		}
-		if strings.TrimSpace(g.urlEntry.Text) != "" {
-			g.lookupBtn.Enable()
-		}
-		if len(g.episodes) > 0 {
-			g.dlBtn.Enable()
+		s.clearBtn.Enable()
+		if s.convertFolder != "" || len(s.convertPaths) > 0 {
+			s.convertBtn.Enable()
 		}
 	})
 }
 
-func (g *guiApp) clearConversion() {
-	if g.isConversionActive() {
+func (s *convertSession) clearConversion() {
+	if s.isConversionActive() {
 		return
 	}
-	g.convertFolder = ""
-	g.convertPaths = nil
-	g.convertSourceEntry.SetText("")
-	g.convertLogRaw = ""
-	g.convertLogEntry.SetText("")
-	g.convertProgress.SetValue(0)
-	g.convertProgress.Hide()
-	g.convertBtn.Disable()
-	g.convertStatus.SetText("Choose a video file or folder to convert.")
+	s.convertFolder = ""
+	s.convertPaths = nil
+	s.sourceEntry.SetText("")
+	s.logRaw = ""
+	s.logEntry.SetText("")
+	s.progress.SetValue(0)
+	s.progress.Hide()
+	s.convertBtn.Disable()
+	s.tabTitle = ""
+	s.state = tabIdle
+	s.status.SetText("Choose a video file or folder to convert.")
+	s.app.refreshTabChrome(s)
 }
 
-func (g *guiApp) setConvertStatus(text string) {
+func (s *convertSession) setConvertStatus(text string) {
 	fyne.Do(func() {
-		g.convertStatus.SetText(text)
+		if !s.stillOpen() {
+			return
+		}
+		s.status.SetText(text)
 	})
 }
 
-func (g *guiApp) setConversionActive(active bool) {
-	g.convertMu.Lock()
-	g.convertActive = active
-	g.convertMu.Unlock()
+func (s *convertSession) setConversionActive(active bool) {
+	s.mu.Lock()
+	s.active = active
+	s.mu.Unlock()
 }
 
-func (g *guiApp) isConversionActive() bool {
-	g.convertMu.Lock()
-	defer g.convertMu.Unlock()
-	return g.convertActive
+func (s *convertSession) isConversionActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active
 }
 
-func (g *guiApp) convertVideoQuality() string {
-	if g.convertVideoSel == nil || g.convertVideoSel.Selected == "" {
+func (s *convertSession) convertVideoQuality() string {
+	if s.videoSel == nil || s.videoSel.Selected == "" {
 		return "720p"
 	}
-	return g.convertVideoSel.Selected
+	return s.videoSel.Selected
 }
 
-func (g *guiApp) convertAudioQuality() string {
-	if g.convertAudioSel == nil || g.convertAudioSel.Selected == "" {
+func (s *convertSession) convertAudioQuality() string {
+	if s.audioSel == nil || s.audioSel.Selected == "" {
 		return "128k"
 	}
-	return g.convertAudioSel.Selected
+	return s.audioSel.Selected
+}
+
+func (s *convertSession) appendLog(chunk string) {
+	if !s.stillOpen() {
+		return
+	}
+	s.logRaw += chunk
+	s.logEntry.SetText(renderLog(s.logRaw))
 }

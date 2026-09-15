@@ -19,75 +19,72 @@ var segmentProgressPattern = regexp.MustCompile(`Downloaded (\d+) of (\d+) segme
 // audio). Used to spread a single episode across its slice of the bar.
 const phasesPerEpisode = 2
 
-// beginDownload arms the progress bar for a run of total episodes.
-func (g *guiApp) beginDownload(total int) {
-	g.progressMu.Lock()
-	g.dlActive = true
-	g.dlTotal = total
-	g.dlDone = 0
-	g.dlPhase = 0
-	g.dlPhasePct = 0
-	g.progressMu.Unlock()
+func (s *downloadSession) beginDownload(total int) {
+	s.progressMu.Lock()
+	s.dlActive = true
+	s.dlTotal = total
+	s.dlDone = 0
+	s.dlPhase = 0
+	s.dlPhasePct = 0
+	s.progressMu.Unlock()
 
 	fyne.Do(func() {
-		g.progress.Show()
-		g.applyProgress()
+		if !s.stillOpen() {
+			return
+		}
+		s.progress.Show()
+		s.applyProgress()
 	})
 }
 
-// startEpisodeProgress resets the per-episode phase tracking.
-func (g *guiApp) startEpisodeProgress() {
-	g.progressMu.Lock()
-	g.dlPhase = 0
-	g.dlPhasePct = 0
-	g.progressMu.Unlock()
+func (s *downloadSession) startEpisodeProgress() {
+	s.progressMu.Lock()
+	s.dlPhase = 0
+	s.dlPhasePct = 0
+	s.progressMu.Unlock()
 
-	fyne.Do(g.applyProgress)
+	fyne.Do(s.applyProgress)
 }
 
-// completeEpisodeProgress advances the bar by one whole episode, whether it
-// downloaded or was skipped, so the bar always reaches the end of the run.
-func (g *guiApp) completeEpisodeProgress() {
-	g.progressMu.Lock()
-	if g.dlDone < g.dlTotal {
-		g.dlDone++
+func (s *downloadSession) completeEpisodeProgress() {
+	s.progressMu.Lock()
+	if s.dlDone < s.dlTotal {
+		s.dlDone++
 	}
-	g.dlPhase = 0
-	g.dlPhasePct = 0
-	g.progressMu.Unlock()
+	s.dlPhase = 0
+	s.dlPhasePct = 0
+	s.progressMu.Unlock()
 
-	fyne.Do(g.applyProgress)
+	fyne.Do(s.applyProgress)
 }
 
-func (g *guiApp) endDownload() {
-	g.progressMu.Lock()
-	g.dlActive = false
-	g.progressMu.Unlock()
+func (s *downloadSession) endDownload() {
+	s.progressMu.Lock()
+	s.dlActive = false
+	s.progressMu.Unlock()
 
 	fyne.Do(func() {
-		g.applyProgress()
+		s.applyProgress()
 	})
 }
 
-func (g *guiApp) hideProgress() {
-	g.progressMu.Lock()
-	g.dlActive = false
-	g.dlTotal = 0
-	g.dlDone = 0
-	g.dlPhase = 0
-	g.dlPhasePct = 0
-	g.progressMu.Unlock()
+func (s *downloadSession) hideProgress() {
+	s.progressMu.Lock()
+	s.dlActive = false
+	s.dlTotal = 0
+	s.dlDone = 0
+	s.dlPhase = 0
+	s.dlPhasePct = 0
+	s.progressMu.Unlock()
 
-	g.progress.SetValue(0)
-	g.progress.Hide()
+	s.progress.SetValue(0)
+	s.progress.Hide()
 }
 
-// noteLogProgress reads download progress out of the captured stdout stream.
-// Runs on the main goroutine, called from the log pump.
-func (g *guiApp) noteLogProgress(chunk string) {
-	g.progressMu.Lock()
-	active := g.dlActive
-	g.progressMu.Unlock()
+func (s *downloadSession) noteLogProgress(chunk string) {
+	s.progressMu.Lock()
+	active := s.dlActive
+	s.progressMu.Unlock()
 	if !active {
 		return
 	}
@@ -99,68 +96,67 @@ func (g *guiApp) noteLogProgress(chunk string) {
 		done, doneErr := strconv.ParseFloat(last[1], 64)
 		total, totalErr := strconv.ParseFloat(last[2], 64)
 		if doneErr == nil && totalErr == nil && total > 0 {
-			g.progressMu.Lock()
-			g.dlPhasePct = done / total
-			g.progressMu.Unlock()
+			s.progressMu.Lock()
+			s.dlPhasePct = done / total
+			s.progressMu.Unlock()
 			changed = true
 		}
 	}
 
-	// Each "Finished downloading!" ends one pass (video, then audio).
 	if finished := strings.Count(chunk, "Finished downloading!"); finished > 0 {
-		g.progressMu.Lock()
-		g.dlPhase += finished
-		if g.dlPhase > phasesPerEpisode {
-			g.dlPhase = phasesPerEpisode
+		s.progressMu.Lock()
+		s.dlPhase += finished
+		if s.dlPhase > phasesPerEpisode {
+			s.dlPhase = phasesPerEpisode
 		}
-		g.dlPhasePct = 0
-		g.progressMu.Unlock()
+		s.dlPhasePct = 0
+		s.progressMu.Unlock()
 		changed = true
 	}
 
 	if changed {
-		g.applyProgress()
+		s.applyProgress()
 	}
 }
 
-// applyProgress pushes the tracked counters onto the bar. Main goroutine only.
-func (g *guiApp) applyProgress() {
-	g.progress.SetValue(g.progressFraction())
-	g.progress.Refresh()
+func (s *downloadSession) applyProgress() {
+	if !s.stillOpen() {
+		return
+	}
+	s.progress.SetValue(s.progressFraction())
+	s.progress.Refresh()
 }
 
-func (g *guiApp) progressFraction() float64 {
-	g.progressMu.Lock()
-	defer g.progressMu.Unlock()
+func (s *downloadSession) progressFraction() float64 {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 
-	if g.dlTotal <= 0 {
+	if s.dlTotal <= 0 {
 		return 0
 	}
-	if g.dlDone >= g.dlTotal {
+	if s.dlDone >= s.dlTotal {
 		return 1
 	}
 
-	phase := float64(g.dlPhase) + g.dlPhasePct
+	phase := float64(s.dlPhase) + s.dlPhasePct
 	episodeFraction := phase / float64(phasesPerEpisode)
 	if episodeFraction > 0.99 {
-		// Hold just short of the next episode until it actually finishes.
 		episodeFraction = 0.99
 	}
 	if episodeFraction < 0 {
 		episodeFraction = 0
 	}
 
-	return (float64(g.dlDone) + episodeFraction) / float64(g.dlTotal)
+	return (float64(s.dlDone) + episodeFraction) / float64(s.dlTotal)
 }
 
-// progressText labels the bar with the episode count behind the percentage.
-func (g *guiApp) progressText() string {
-	fraction := g.progressFraction()
+func (s *downloadSession) progressText() string {
+	fraction := s.progressFraction()
 
-	g.progressMu.Lock()
-	total := g.dlTotal
-	done := g.dlDone
-	g.progressMu.Unlock()
+	s.progressMu.Lock()
+	total := s.dlTotal
+	done := s.dlDone
+	s.progressMu.Unlock()
 
 	if total <= 0 {
 		return ""

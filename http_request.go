@@ -142,7 +142,7 @@ func DoRequest(req *http.Request) (*http.Response, error) {
 		// Back off before the second and later refreshes. Hammering the token
 		// endpoint is what turns a single expired token into a rate-limited
 		// stream of rejections.
-		if attempt > 0 && !sleepOrCancel(time.Duration(attempt)*3*time.Second) {
+		if attempt > 0 && !sleepOrCancelCtx(ctx, time.Duration(attempt)*3*time.Second) {
 			return nil, errCancelled
 		}
 
