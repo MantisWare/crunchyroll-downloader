@@ -198,7 +198,7 @@ func probeStreamOptions(contentID string) (opts streamOptions, err error) {
 	}
 	opts.Subtitles = uniqueSorted(opts.Subtitles)
 
-	manifest, raw, manifestErr := parseManifest(episode.ManifestURL)
+	manifest, raw, manifestErr := parseManifest(defaultJobEnv(), episode.ManifestURL)
 	if manifestErr != nil {
 		return opts, manifestErr
 	}
@@ -218,11 +218,11 @@ func probeStreamOptions(contentID string) (opts streamOptions, err error) {
 	return opts, nil
 }
 
-func probeIDForEpisodes(episodes []SeasonEpisode, requestedAudio string) string {
+func probeIDForEpisodes(episodes []SeasonEpisode, requestedAudio string, allowFallback bool) string {
 	if len(episodes) == 0 {
 		return ""
 	}
-	job, ok := resolveSeasonEpisodeJob(episodes[0], requestedAudio)
+	job, ok := resolveSeasonEpisodeJob(defaultJobEnv(), episodes[0], requestedAudio, allowFallback)
 	if ok {
 		return job.id
 	}

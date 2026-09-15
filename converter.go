@@ -102,7 +102,7 @@ func conversionJobsForFolder(folder, videoQuality string) ([]conversionJob, erro
 	return jobs, nil
 }
 
-func convertVideo(job conversionJob, videoQuality, audioQuality string) error {
+func convertVideo(env jobEnv, job conversionJob, videoQuality, audioQuality string) error {
 	height, err := strconv.Atoi(strings.TrimSuffix(videoQuality, "p"))
 	if err != nil || height <= 0 {
 		return fmt.Errorf("invalid video quality %q", videoQuality)
@@ -132,13 +132,13 @@ func convertVideo(job conversionJob, videoQuality, audioQuality string) error {
 		job.Output,
 	}
 
-	cmd := exec.CommandContext(downloadContext(), "ffmpeg", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stdout
+	cmd := exec.CommandContext(env.context(), "ffmpeg", args...)
+	cmd.Stdout = env.writer()
+	cmd.Stderr = env.writer()
 
 	if err := cmd.Run(); err != nil {
 		_ = os.Remove(job.Output)
-		if isCancelled() {
+		if env.cancelled() {
 			return errCancelled
 		}
 		return fmt.Errorf("FFmpeg conversion: %w", err)

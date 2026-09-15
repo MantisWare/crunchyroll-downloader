@@ -80,8 +80,8 @@ type DubVersion struct {
 	GUID        string `json:"guid"`
 }
 
-func getEpisodeInfo(id string) EpisodeInfo {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://www.crunchyroll.com/content/v2/cms/objects/%s?ratings=true&preferred_audio_language=%s&locale=en-US", id, *audioLang), nil)
+func getEpisodeInfo(id, audioLang string) EpisodeInfo {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://www.crunchyroll.com/content/v2/cms/objects/%s?ratings=true&preferred_audio_language=%s&locale=en-US", id, audioLang), nil)
 	if err != nil {
 		panic(err)
 	}

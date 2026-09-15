@@ -192,6 +192,9 @@ Usage of ./crunchyroll-downloader:
         Audio quality (default "192k")
   -browser-login
         Open a browser to sign in and capture the etp_rt cookie
+  -dub-fallback
+        Download the default dub when the selected audio language is unavailable
+        instead of skipping the episode
   -etp-rt string
         The "etp_rt" cookie value of your account
   -season int
@@ -279,7 +282,7 @@ Audio and subtitle languages use BCP 47 locale codes. Available options depend o
 
 1. **Authenticate** — optionally captures `etp_rt` through an isolated browser login, then exchanges it for a Bearer access token (auto-refreshes on expiry)
 2. **Resolve content** — fetches episode metadata from the CMS API; for season URLs, lists all episodes in the season
-3. **Select audio dub** — if the requested `-audio-lang` differs from the episode's default, looks up the correct version GUID from the available dubs and switches to it
+3. **Select audio dub** — if the requested `-audio-lang` differs from the episode's default, looks up the correct version GUID from the available dubs and switches to it; episodes without that dub are skipped unless `-dub-fallback` (the GUI's "Use default if missing" checkbox) is set, in which case the default audio is downloaded and subtitles are kept
 4. **Fetch playback** — calls the playback API with the resolved GUID to get the DASH manifest, subtitle URLs, and Widevine token
 5. **Parse manifest** — extracts video and audio adaptation sets from the MPD, selects representations matching the requested quality
 6. **Obtain keys** — extracts PSSH from the manifest, sends a Widevine license request, and retrieves content decryption keys

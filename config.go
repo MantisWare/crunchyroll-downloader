@@ -18,6 +18,9 @@ type appConfig struct {
 	OutputDir           string `json:"output_dir"`
 	ConvertVideoQuality string `json:"convert_video_quality"`
 	ConvertAudioQuality string `json:"convert_audio_quality"`
+	// DubFallback downloads an episode's default audio when the selected dub
+	// is missing instead of skipping the episode.
+	DubFallback bool `json:"dub_fallback"`
 	// WindowWidth and WindowHeight store the content size of the desktop
 	// window so it reopens the way the user left it.
 	WindowWidth  float32 `json:"window_width"`

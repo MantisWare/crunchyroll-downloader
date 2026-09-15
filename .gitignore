@@ -1,0 +1,15 @@
+.idea
+.DS_Store
+
+# Build output
+bin/
+
+# Saved cookie / UI settings (if created in the repo)
+.crunchyroll.config/
+
+# Widevine stuff
+*.wvd
+client_id.bin
+private_key.pem
+
+*.mkv

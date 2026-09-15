@@ -8,6 +8,7 @@ var (
 	videoQuality  = flag.String("video-quality", "1080p", "Video quality")
 	audioQuality  = flag.String("audio-quality", "192k", "Audio quality")
 	seasonNumber  = flag.Int("season", 0, "Season number. Not used if an episode link is entered")
+	dubFallback   = flag.Bool("dub-fallback", false, "Download the default dub when the selected audio language is unavailable instead of skipping the episode")
 	etpRt         = flag.String("etp-rt", "", "The \"etp_rt\" cookie value of your account")
 	browserLogin  = flag.Bool("browser-login", false, "Open a browser to sign in and capture the etp_rt cookie")
 	showHelp      = flag.Bool("help", false, "Show detailed help and usage information")
