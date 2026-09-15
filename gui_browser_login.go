@@ -17,7 +17,7 @@ func (g *guiApp) startOrCancelBrowserLogin() {
 	if g.browserLoginCancel != nil {
 		g.browserLoginCancel()
 		g.browserLoginMu.Unlock()
-		g.setStatus("Cancelling browser sign-in…")
+		g.setAccountStatus("Cancelling browser sign-in…")
 		return
 	}
 
@@ -25,8 +25,7 @@ func (g *guiApp) startOrCancelBrowserLogin() {
 	g.browserLoginCancel = cancel
 	g.browserLoginMu.Unlock()
 
-	g.setBusy(true)
-	g.setStatus("Complete the sign-in in the browser window. The app will continue automatically.")
+	g.setAccountStatus("Complete the sign-in in the browser window. The app will continue automatically.")
 	fyne.Do(func() {
 		g.signInBtn.SetText("Cancel sign-in")
 		g.signInBtn.SetIcon(theme.CancelIcon())
@@ -58,29 +57,28 @@ func (g *guiApp) runBrowserLogin(ctx context.Context, cancel context.CancelFunc)
 		if err == nil {
 			g.etpEntry.SetText(cookie)
 			g.persistSettings()
-			g.status.SetText("Signed in successfully. Paste a Crunchyroll URL, then click Lookup.")
+			g.applyAccountStatus("Signed in successfully. Paste a Crunchyroll URL, then click Lookup.")
 			return
 		}
 
 		switch {
 		case errors.Is(err, context.Canceled):
-			g.status.SetText("Browser sign-in cancelled.")
+			g.applyAccountStatus("Browser sign-in cancelled.")
 		case errors.Is(err, context.DeadlineExceeded):
-			g.status.SetText("Browser sign-in timed out after 10 minutes. Please try again.")
+			g.applyAccountStatus("Browser sign-in timed out after 10 minutes. Please try again.")
 		case errors.Is(err, errBrowserClosed):
-			g.status.SetText("Browser closed before sign-in completed. Please try again.")
+			g.applyAccountStatus("Browser closed before sign-in completed. Please try again.")
 		default:
-			g.status.SetText(fmt.Sprintf("Browser sign-in failed: %s", err))
+			g.applyAccountStatus(fmt.Sprintf("Browser sign-in failed: %s", err))
 		}
 	})
-	g.setBusy(false)
 }
 
 func (g *guiApp) cancelBrowserLogin() {
 	g.browserLoginMu.Lock()
-	defer g.browserLoginMu.Unlock()
-
-	if g.browserLoginCancel != nil {
-		g.browserLoginCancel()
+	cancel := g.browserLoginCancel
+	g.browserLoginMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }

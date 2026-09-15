@@ -21,65 +21,68 @@ type lookupResult struct {
 	lookedUpURL   string
 }
 
-func (g *guiApp) fetchContent(etp, rawURL string) {
-	g.setBusy(true)
-	defer g.setBusy(false)
+func (s *downloadSession) fetchContent(etp, rawURL, audioLang string) {
+	s.setBusy(true)
+	defer s.setBusy(false)
 
 	if etp == "" {
-		g.setStatus("etp_rt cookie is required. Use the info icon next to the cookie field for help.")
+		s.setStatus("etp_rt cookie is required. Use the info icon next to the cookie field for help.")
 		return
 	}
 
 	parsed, err := parseContentURL(rawURL)
 	if err != nil {
-		g.setStatus(err.Error())
+		s.setStatus(err.Error())
 		return
 	}
 
 	if loginErr := loginWithCookie(etp); loginErr != nil {
-		g.setStatus(loginErr.Error())
+		s.setStatus(loginErr.Error())
 		return
 	}
 
-	g.applyOutputDir()
-	g.persistSettings()
-	g.parsed = parsed
+	s.applyOutputDir()
+	s.app.persistSettings()
+	s.parsed = parsed
 
 	var result lookupResult
 	var lookupErr error
 	if parsed.Kind == kindWatch {
-		result, lookupErr = g.lookupWatch(parsed.ID)
+		result, lookupErr = s.lookupWatch(parsed.ID, audioLang)
 	} else {
-		result, lookupErr = g.lookupSeries(parsed.ID)
+		result, lookupErr = s.lookupSeries(parsed.ID, audioLang)
 	}
 	if lookupErr != nil {
-		g.setStatus(lookupErr.Error())
+		s.setStatus(lookupErr.Error())
 		return
 	}
 	result.kind = parsed.Kind
 	result.lookedUpURL = rawURL
 
 	fyne.Do(func() {
-		g.applyLookup(result)
+		if !s.stillOpen() {
+			return
+		}
+		s.applyLookup(result)
 	})
 }
 
-func (g *guiApp) lookupWatch(id string) (lookupResult, error) {
-	info, err := fetchEpisodeInfo(id)
+func (s *downloadSession) lookupWatch(id, audioLang string) (lookupResult, error) {
+	info, err := fetchEpisodeInfo(id, audioLang)
 	if err != nil {
 		return lookupResult{}, err
 	}
 
 	audio := audioLocalesFromEpisode(info)
-	*audioLang = pickPreferred(audio, *audioLang)
-	contentID, ok := resolveWatchEpisodeID(id, info, *audioLang)
+	requested := pickPreferred(audio, audioLang)
+	contentID, _, ok := resolveWatchEpisodeID(id, info, requested, s.dubFallbackChk.Checked)
 	if !ok {
 		contentID = id
 	}
 
 	stream, probeErr := probeStreamOptions(contentID)
 	if probeErr != nil {
-		fmt.Printf("Could not inspect stream options: %s\n", probeErr)
+		jobPrintf(s.jobEnv(), "Could not inspect stream options: %s\n", probeErr)
 	}
 
 	return lookupResult{
@@ -94,8 +97,8 @@ func (g *guiApp) lookupWatch(id string) (lookupResult, error) {
 	}, nil
 }
 
-func (g *guiApp) lookupSeries(id string) (lookupResult, error) {
-	seasons, err := fetchSeasons(id)
+func (s *downloadSession) lookupSeries(id, audioLang string) (lookupResult, error) {
+	seasons, err := fetchSeasons(id, audioLang)
 	if err != nil {
 		return lookupResult{}, err
 	}
@@ -104,7 +107,7 @@ func (g *guiApp) lookupSeries(id string) (lookupResult, error) {
 	}
 
 	audio := audioLocalesFromSeasons(seasons)
-	*audioLang = pickPreferred(audio, *audioLang)
+	requested := pickPreferred(audio, audioLang)
 
 	numbers := uniqueSeasonNumbers(seasons)
 	seasonOptions := []string{seasonAllLabel}
@@ -116,18 +119,18 @@ func (g *guiApp) lookupSeries(id string) (lookupResult, error) {
 		initialSeason = fmt.Sprintf("Season %d", numbers[0])
 	}
 
-	episodes, title := g.episodesForSeason(seasons, numbers, *audioLang)
+	episodes, title := s.episodesForSeason(seasons, numbers, requested)
 	if extra := audioLocalesFromEpisodes(episodes); len(extra) > 0 {
 		audio = uniqueSorted(append(audio, extra...))
-		*audioLang = pickPreferred(audio, *audioLang)
+		requested = pickPreferred(audio, requested)
 	}
 
-	probeID := probeIDForEpisodes(episodes, *audioLang)
+	probeID := probeIDForEpisodes(episodes, requested, s.dubFallbackChk.Checked)
 	var stream streamOptions
 	if probeID != "" {
 		probed, probeErr := probeStreamOptions(probeID)
 		if probeErr != nil {
-			fmt.Printf("Could not inspect stream options: %s\n", probeErr)
+			jobPrintf(s.jobEnv(), "Could not inspect stream options: %s\n", probeErr)
 		} else {
 			stream = probed
 		}
@@ -144,7 +147,7 @@ func (g *guiApp) lookupSeries(id string) (lookupResult, error) {
 	}, nil
 }
 
-func (g *guiApp) episodesForSeason(seasons []Season, numbers []int, requestedAudio string) ([]SeasonEpisode, string) {
+func (s *downloadSession) episodesForSeason(seasons []Season, numbers []int, requestedAudio string) ([]SeasonEpisode, string) {
 	if len(numbers) == 0 {
 		return nil, ""
 	}
@@ -159,20 +162,27 @@ func (g *guiApp) episodesForSeason(seasons []Season, numbers []int, requestedAud
 	return list, title
 }
 
-func (g *guiApp) applyLookup(result lookupResult) {
-	g.ignoreSelect = true
-	defer func() { g.ignoreSelect = false }()
+func (s *downloadSession) applyLookup(result lookupResult) {
+	s.app.ignoreSelect = true
+	defer func() { s.app.ignoreSelect = false }()
 
-	g.lookedUpURL = result.lookedUpURL
-	g.seasons = result.seasons
-	g.parsed.Kind = result.kind
+	s.lookedUpURL = result.lookedUpURL
+	s.seasons = result.seasons
+	s.parsed.Kind = result.kind
+	desired := result.title
+	if desired == "" && len(result.episodes) > 0 {
+		desired = result.episodes[0].SeriesTitle
+	}
+	if desired != "" {
+		s.tabTitle = uniqueTitle(truncateTitle(desired, tabTitleMaxRunes), s.app.otherTitles(s.tab))
+	}
 
 	audioCodes := result.audioCodes
 	if len(audioCodes) == 0 {
 		audioCodes = sortedLanguageCodes()
 	}
-	g.setSelectOptions(g.audioSel, languageLabels(audioCodes), languageLabel(*audioLang))
-	*audioLang = languageCodeFromLabel(g.audioSel.Selected)
+	setSelectOptions(s.audioSel, languageLabels(audioCodes), languageLabel(s.app.defaults.audioLang))
+	s.app.defaults.audioLang = languageCodeFromLabel(s.audioSel.Selected)
 
 	subs := []string{"None"}
 	if len(result.stream.Subtitles) > 0 {
@@ -181,68 +191,72 @@ func (g *guiApp) applyLookup(result lookupResult) {
 		subs = append(subs, languageLabels(sortedLanguageCodes())...)
 	}
 	preferredSubs := "None"
-	if *subtitlesLang != *audioLang {
-		preferredSubs = languageLabel(*subtitlesLang)
+	if s.app.defaults.subsLang != s.app.defaults.audioLang {
+		preferredSubs = languageLabel(s.app.defaults.subsLang)
 	}
-	g.setSelectOptions(g.subsSel, subs, preferredSubs)
-	if g.subsSel.Selected == "None" {
-		*subtitlesLang = *audioLang
+	setSelectOptions(s.subsSel, subs, preferredSubs)
+	if s.subsSel.Selected == "None" {
+		s.app.defaults.subsLang = s.app.defaults.audioLang
 	} else {
-		*subtitlesLang = languageCodeFromLabel(g.subsSel.Selected)
+		s.app.defaults.subsLang = languageCodeFromLabel(s.subsSel.Selected)
 	}
 
 	video := result.stream.VideoQuality
 	if len(video) == 0 {
 		video = defaultVideoQualities
 	}
-	g.setSelectOptions(g.videoSel, video, *videoQuality)
-	*videoQuality = g.videoSel.Selected
+	setSelectOptions(s.videoSel, video, s.app.defaults.videoQuality)
+	s.app.defaults.videoQuality = s.videoSel.Selected
 
 	audioQ := result.stream.AudioQuality
 	if len(audioQ) == 0 {
 		audioQ = defaultAudioQualities
 	}
-	g.setSelectOptions(g.audioQSel, audioQ, *audioQuality)
-	*audioQuality = g.audioQSel.Selected
+	setSelectOptions(s.audioQSel, audioQ, s.app.defaults.audioQuality)
+	s.app.defaults.audioQuality = s.audioQSel.Selected
 
 	if len(result.seasonOptions) > 0 {
-		g.seasonSel.Options = result.seasonOptions
-		g.seasonSel.SetSelected(result.initialSeason)
+		s.seasonSel.Options = result.seasonOptions
+		s.seasonSel.SetSelected(result.initialSeason)
 	}
 	if result.kind == kindWatch {
-		g.seasonSel.Disable()
-		g.seasonRow.Hide()
+		s.seasonSel.Disable()
+		s.seasonRow.Hide()
 	} else {
-		g.seasonSel.Enable()
-		g.seasonRow.Show()
+		s.seasonSel.Enable()
+		s.seasonRow.Show()
 	}
 
-	g.optionsBox.Show()
-	g.ensureWindowFits()
-	g.renderEpisodes(result.title, result.episodes)
-	g.persistSettings()
-	g.relayout()
+	s.optionsBox.Show()
+	s.app.ensureWindowFits()
+	s.renderEpisodes(result.title, result.episodes)
+	s.app.refreshTabChrome(s)
+	s.app.persistSettings()
+	s.app.relayout()
 }
 
-func (g *guiApp) reloadEpisodes() {
-	if len(g.seasons) == 0 {
+func (s *downloadSession) reloadEpisodes() {
+	if len(s.seasons) == 0 {
 		return
 	}
-	g.setBusy(true)
-	defer g.setBusy(false)
+	s.setBusy(true)
+	defer s.setBusy(false)
 
-	*audioLang = languageCodeFromLabel(g.audioSel.Selected)
-	seasonN, oneSeason := g.selectedSeasonNumber()
+	requested := languageCodeFromLabel(s.audioSel.Selected)
+	seasonN, oneSeason := s.selectedSeasonNumber()
 
 	var episodes []SeasonEpisode
 	var title string
 
 	if oneSeason {
-		list, ok := resolveSeasonEpisodes(g.seasons, seasonN, *audioLang)
+		list, ok := resolveSeasonEpisodes(s.seasons, seasonN, requested)
 		if !ok {
-			g.setStatus(fmt.Sprintf("Season %d has no %s audio available.", seasonN, *audioLang))
+			s.setStatus(fmt.Sprintf("Season %d has no %s audio available.", seasonN, requested))
 			fyne.Do(func() {
-				g.renderEpisodes("", nil)
+				if !s.stillOpen() {
+					return
+				}
+				s.renderEpisodes("", nil)
 			})
 			return
 		}
@@ -251,8 +265,8 @@ func (g *guiApp) reloadEpisodes() {
 			title = fmt.Sprintf("%s · Season %d", list[0].SeriesTitle, seasonN)
 		}
 	} else {
-		for _, season := range seasonsForAudio(g.seasons, *audioLang) {
-			list, ok := resolveSeasonEpisodes(g.seasons, season.SeasonNumber, *audioLang)
+		for _, season := range seasonsForAudio(s.seasons, requested) {
+			list, ok := resolveSeasonEpisodes(s.seasons, season.SeasonNumber, requested)
 			if !ok {
 				continue
 			}
@@ -264,103 +278,117 @@ func (g *guiApp) reloadEpisodes() {
 	}
 
 	fyne.Do(func() {
-		g.renderEpisodes(title, episodes)
+		if !s.stillOpen() {
+			return
+		}
+		if title != "" {
+			s.tabTitle = uniqueTitle(truncateTitle(title, tabTitleMaxRunes), s.app.otherTitles(s.tab))
+		}
+		s.renderEpisodes(title, episodes)
+		s.app.refreshTabChrome(s)
 	})
 }
 
-func (g *guiApp) downloadSelected(etp string, selected []SeasonEpisode) {
+func (s *downloadSession) downloadSelected(etp string, selected []SeasonEpisode) {
 	if len(selected) == 0 {
-		g.setStatus("Select at least one episode to download.")
+		s.setStatus("Select at least one episode to download.")
 		return
 	}
 
 	if etp == "" {
-		g.setStatus("etp_rt cookie is required.")
+		s.setStatus("etp_rt cookie is required.")
 		return
 	}
 	if loginErr := loginWithCookie(etp); loginErr != nil {
-		g.setStatus(loginErr.Error())
+		s.setStatus(loginErr.Error())
 		return
 	}
 
-	*audioLang = languageCodeFromLabel(g.audioSel.Selected)
-	if g.subsSel.Selected == "None" {
-		*subtitlesLang = *audioLang
-	} else {
-		*subtitlesLang = languageCodeFromLabel(g.subsSel.Selected)
-	}
-	*videoQuality = g.videoSel.Selected
-	*audioQuality = g.audioQSel.Selected
-	g.applyOutputDir()
-	g.persistSettings()
+	s.applyOutputDir()
+	s.app.persistSettings()
 
-	g.setBusy(true)
-	defer g.setBusy(false)
-	g.setStatus(fmt.Sprintf("Downloading %d episode(s)…", len(selected)))
+	s.setBusy(true)
+	defer s.setBusy(false)
+	s.setStatus(fmt.Sprintf("Downloading %d episode(s)…", len(selected)))
 
-	beginCancellable()
-	defer endCancellable()
-
-	g.beginDownload(len(selected))
-	defer g.endDownload()
+	s.run.begin()
+	defer s.run.end()
 
 	fyne.Do(func() {
-		g.stopBtn.Enable()
+		if !s.stillOpen() {
+			return
+		}
+		s.state = tabRunning
+		s.app.refreshTabChrome(s)
+		s.stopBtn.Enable()
 	})
+
+	env := s.jobEnv()
+	s.beginDownload(len(selected))
+	defer s.endDownload()
 
 	okCount := 0
 	for i, episode := range selected {
-		if isCancelled() {
+		if env.cancelled() {
 			break
 		}
 
-		g.startEpisodeProgress()
-		g.setStatus(fmt.Sprintf("Downloading %s (%d of %d)…", episodeKey(episode), i+1, len(selected)))
+		s.startEpisodeProgress()
+		s.setStatus(fmt.Sprintf("Downloading %s (%d of %d)…", episodeKey(episode), i+1, len(selected)))
 
-		if downloadOneEpisode(episode) {
+		if downloadOneEpisode(env, episode) {
 			okCount++
 		}
 
-		g.completeEpisodeProgress()
+		s.completeEpisodeProgress()
 	}
 
-	stopped := isCancelled()
+	stopped := env.cancelled()
 	msg := fmt.Sprintf("Finished: %d/%d episode(s) downloaded.", okCount, len(selected))
 	if stopped {
 		msg = fmt.Sprintf("Stopped: %d/%d episode(s) downloaded.", okCount, len(selected))
 	}
-	fmt.Println(msg)
+	jobPrintln(env, msg)
 	title := ""
-	if len(g.episodes) > 0 {
-		title = g.episodes[0].SeriesTitle
+	if len(s.episodes) > 0 {
+		title = s.episodes[0].SeriesTitle
 	}
 	dialogTitle := "Download complete"
 	if stopped {
 		dialogTitle = "Download stopped"
 	}
-	g.setStatus(msg)
+	s.setStatus(msg)
 	fyne.Do(func() {
-		g.stopBtn.Disable()
-		g.renderEpisodes(title, g.episodes)
-		dialog.ShowInformation(dialogTitle, msg, g.win)
+		if !s.stillOpen() {
+			return
+		}
+		s.stopBtn.Disable()
+		if stopped {
+			s.state = tabStopped
+		} else {
+			s.state = tabComplete
+		}
+		s.app.refreshTabChrome(s)
+		s.renderEpisodes(title, s.episodes)
+		if s.app.tabs != nil && s.app.tabs.Selected() == s.tab {
+			dialog.ShowInformation(dialogTitle, msg, s.app.win)
+		}
 	})
 }
 
-// downloadOneEpisode isolates a single episode download so an unexpected
-// failure inside the engine cannot take down the whole app.
-func downloadOneEpisode(episode SeasonEpisode) (ok bool) {
+func downloadOneEpisode(env jobEnv, episode SeasonEpisode) (ok bool) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			fmt.Printf("! Unexpected error on %s: %v\n", episodeKey(episode), recovered)
+			jobPrintf(env, "! Unexpected error on %s: %v\n", episodeKey(episode), recovered)
 			ok = false
 		}
 	}()
 
-	job, resolved := resolveSeasonEpisodeJob(episode, *audioLang)
+	job, resolved := resolveSeasonEpisodeJob(env, episode, env.audioLang, env.dubFallback)
 	if !resolved {
 		return false
 	}
-	return downloadEpisode(job.id, videoQuality, audioQuality, subtitlesLang, job.info)
+	return downloadEpisode(env, job.id, job.info)
 }
 
 func loginWithCookie(etp string) (err error) {
@@ -372,28 +400,26 @@ func loginWithCookie(etp string) (err error) {
 	if err := RefreshAccessToken(etp); err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
-	// Keep the validated cookie available to automatic token refreshes later
-	// in a long-running season download.
 	*etpRt = etp
 	return nil
 }
 
-func fetchEpisodeInfo(id string) (info EpisodeInfo, err error) {
+func fetchEpisodeInfo(id, audioLang string) (info EpisodeInfo, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("failed to load episode: %v", recovered)
 		}
 	}()
-	info = getEpisodeInfo(id)
+	info = getEpisodeInfo(id, audioLang)
 	return info, nil
 }
 
-func fetchSeasons(id string) (seasons []Season, err error) {
+func fetchSeasons(id, audioLang string) (seasons []Season, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("failed to load seasons: %v", recovered)
 		}
 	}()
-	seasons = getSeasons(id)
+	seasons = getSeasons(id, audioLang)
 	return seasons, nil
 }
