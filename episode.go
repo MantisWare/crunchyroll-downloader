@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 )
 
 type Episode struct {
@@ -14,9 +17,12 @@ type Episode struct {
 	Subtitles map[string]*Subtitle `json:"subtitles"`
 	// Token to give to the Widevine CDM challenge
 	Token string `json:"token"`
-	// Error, `nil` if there's no error
-	Error *string `json:"error"`
 }
+
+// playbackSlot serializes opening a Crunchyroll stream. Accounts only allow a
+// small number of concurrent playback tokens, so two tabs calling /play while
+// another download still holds a token would fail.
+var playbackSlot sync.Mutex
 
 type Subtitle struct {
 	// Language represents a subtitle language in the "en-US" format
@@ -38,19 +44,139 @@ func getEpisode(id string) (Episode, error) {
 	}
 	defer resp.Body.Close()
 
-	var episode Episode
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Episode{}, fmt.Errorf("reading playback response: %w", err)
 	}
-	if err = json.Unmarshal(body, &episode); err != nil {
+	return parsePlaybackResponse(body)
+}
+
+type playbackResponse struct {
+	ManifestURL string               `json:"url"`
+	Subtitles   map[string]*Subtitle `json:"subtitles"`
+	Token       string               `json:"token"`
+	Error       json.RawMessage      `json:"error"`
+	Code        string               `json:"code"`
+	Message     string               `json:"message"`
+	Reason      string               `json:"reason"`
+}
+
+func parsePlaybackResponse(body []byte) (Episode, error) {
+	var raw playbackResponse
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return Episode{}, fmt.Errorf("parsing playback response: %w", err)
 	}
-	if episode.Error != nil {
-		return Episode{}, fmt.Errorf("crunchyroll: %s", *episode.Error)
+	if msg := playbackErrorMessage(raw); msg != "" {
+		return Episode{}, fmt.Errorf("crunchyroll: %s", msg)
+	}
+	return Episode{
+		ManifestURL: raw.ManifestURL,
+		Subtitles:   raw.Subtitles,
+		Token:       raw.Token,
+	}, nil
+}
+
+func playbackErrorMessage(raw playbackResponse) string {
+	value, isError := decodePlaybackErrorField(raw.Error)
+	if !isError && raw.Code == "" && raw.Message == "" && raw.Reason == "" {
+		return ""
+	}
+	if !isError && raw.ManifestURL != "" {
+		return ""
 	}
 
-	return episode, nil
+	label := playbackErrorLabel(value, raw.Code)
+	parts := uniqueNonEmpty(label, raw.Code, value, raw.Reason, raw.Message)
+	return strings.Join(parts, ": ")
+}
+
+func playbackErrorLabel(value, code string) string {
+	for _, candidate := range []string{code, value} {
+		if isPlaybackRateLimitCode(candidate) {
+			return "rate limited (too many requests)"
+		}
+	}
+	return ""
+}
+
+func isPlaybackRateLimitCode(code string) bool {
+	n, err := strconv.Atoi(strings.TrimSpace(code))
+	if err != nil {
+		return false
+	}
+	return n >= 4290 && n <= 4299
+}
+
+func decodePlaybackErrorField(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, asString != ""
+	}
+
+	var asNumber json.Number
+	if err := json.Unmarshal(raw, &asNumber); err == nil {
+		if asNumber == "0" {
+			return "", false
+		}
+		return asNumber.String(), true
+	}
+
+	var asBool bool
+	if err := json.Unmarshal(raw, &asBool); err == nil {
+		return "", asBool
+	}
+
+	var asObject map[string]any
+	if err := json.Unmarshal(raw, &asObject); err == nil {
+		code, _ := asObject["code"].(string)
+		message, _ := asObject["message"].(string)
+		joined := strings.Join(uniqueNonEmpty(code, message), ": ")
+		return joined, joined != ""
+	}
+
+	return strings.TrimSpace(string(raw)), true
+}
+
+func uniqueNonEmpty(values ...string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func isRetryablePlaybackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRateLimitedPlaybackError(err) {
+		return false
+	}
+	msg := strings.ToUpper(err.Error())
+	return strings.Contains(msg, "TOO_MANY_ACTIVE_STREAMS") || strings.Contains(msg, "ACTIVE_STREAM")
+}
+
+func isRateLimitedPlaybackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "rate limited") || strings.Contains(msg, "too many requests") {
+		return true
+	}
+	trimmed := strings.TrimSpace(err.Error())
+	trimmed = strings.TrimPrefix(trimmed, "crunchyroll: ")
+	return isPlaybackRateLimitCode(trimmed)
 }
 
 type EpisodeMetadataResponse struct {

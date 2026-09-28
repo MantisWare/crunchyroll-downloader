@@ -448,17 +448,38 @@ func downloadEpisode(env jobEnv, contentId string, info EpisodeInfo) bool {
 		_ = os.Remove(outputFile)
 	}
 
+	playbackSlot.Lock()
+	slotHeld := true
+	unlockPlayback := func() {
+		if !slotHeld {
+			return
+		}
+		slotHeld = false
+		playbackSlot.Unlock()
+	}
+	defer unlockPlayback()
+
 	var episode Episode
 	var err error
 
-	maxRetries := 3
+	maxRetries := 5
 	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if !slotHeld {
+			playbackSlot.Lock()
+			slotHeld = true
+		}
 		episode, err = getEpisode(contentId)
 		if err == nil {
 			break
 		}
 
-		if strings.Contains(err.Error(), "TOO_MANY_ACTIVE_STREAMS") && attempt < maxRetries {
+		if isRateLimitedPlaybackError(err) {
+			jobPrintf(env, "! Crunchyroll rate-limited playback requests (%s). Wait 10–20 minutes, then try again.\n", err)
+			return false
+		}
+
+		if isRetryablePlaybackError(err) && attempt < maxRetries {
+			unlockPlayback()
 			wait := time.Duration(attempt) * 10 * time.Second
 			jobPrintf(env, "Too many active streams, waiting %v before retry (%d/%d)...\n", wait, attempt, maxRetries)
 			if !sleepOrCancelCtx(env.context(), wait) {
@@ -472,13 +493,16 @@ func downloadEpisode(env jobEnv, contentId string, info EpisodeInfo) bool {
 		return false
 	}
 
-	defer func() {
-		if episode.Token != "" {
-			if success := deleteStream(contentId, episode.Token); !success {
-				jobPrintln(env, "Warning: failed to release the playback stream.")
-			}
+	releaseStream := func() {
+		if episode.Token == "" {
+			return
 		}
-	}()
+		if success := deleteStream(contentId, episode.Token); !success {
+			jobPrintln(env, "Warning: failed to release the playback stream.")
+		}
+		episode.Token = ""
+	}
+	defer releaseStream()
 
 	jobPrintf(env, "Downloading: %s (S%02vE%02v) from %s\n", info.Title, info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, info.EpisodeMetadata.SeriesTitle)
 
@@ -541,6 +565,11 @@ func downloadEpisode(env jobEnv, contentId string, info EpisodeInfo) bool {
 		jobPrintf(env, "! License error for S%02vE%02v: %s\n", info.EpisodeMetadata.SeasonNumber, info.EpisodeMetadata.EpisodeNumber, err)
 		return false
 	}
+
+	// Free the account's stream slot before the long segment download so another
+	// tab can start. The token is only required for the Widevine license.
+	releaseStream()
+	unlockPlayback()
 
 	var subsFile string
 	// Compare against the audio actually being downloaded: a dub fallback lands

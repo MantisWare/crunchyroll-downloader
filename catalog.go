@@ -183,6 +183,9 @@ func probeStreamOptions(contentID string) (opts streamOptions, err error) {
 		}
 	}()
 
+	playbackSlot.Lock()
+	defer playbackSlot.Unlock()
+
 	episode, getErr := getEpisode(contentID)
 	if getErr != nil {
 		return streamOptions{}, getErr
