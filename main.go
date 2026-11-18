@@ -22,9 +22,9 @@ USAGE
   crunchyroll-downloader [options]
 
 OPTIONS
-  -url string          URL of the episode or series to download
+  -url string          Crunchyroll episode/series URL, or a YouTube video/playlist URL
   -urls string         Path to a text file with one URL per line
-  -etp-rt string       The "etp_rt" cookie value from your Crunchyroll account (required)
+  -etp-rt string       The "etp_rt" cookie value from your Crunchyroll account (required for Crunchyroll)
   -browser-login       Open a browser to sign in and save the required cookie
   -audio-lang string   Audio language / dub (default "ja-JP")
   -dub-fallback        Download the default dub when the selected one is missing
@@ -51,6 +51,9 @@ SETUP
      Must be installed and available in your PATH.
      https://www.ffmpeg.org/download.html
 
+  4. YouTube downloads also need yt-dlp 2026.08.19 or newer, and Deno, on PATH.
+     A YouTube URL does not use the Crunchyroll cookie.
+
 EXAMPLES
   Download a single episode (Japanese audio, English subtitles):
     crunchyroll-downloader \
@@ -69,6 +72,11 @@ EXAMPLES
 
   Batch download from a file:
     crunchyroll-downloader -urls list.txt -audio-lang pt-BR -etp-rt YOUR_TOKEN
+
+  Download a YouTube video:
+    crunchyroll-downloader \
+      -url https://www.youtube.com/watch?v=jNQXAC9IVRw \
+      -video-quality 720p
 
 LANGUAGES
 `)
@@ -94,6 +102,17 @@ MORE INFO
 }
 
 func processUrl(url string) {
+	if isYouTubeHost(url) {
+		if _, err := parseYouTubeURL(url); err != nil {
+			fmt.Println(err)
+			return
+		}
+		if err := downloadYouTubeURL(defaultJobEnv(), url); err != nil {
+			fmt.Printf("Error: %s\n", err)
+		}
+		return
+	}
+
 	parsed, err := parseContentURL(url)
 	if err != nil {
 		fmt.Println(err)
@@ -137,7 +156,7 @@ func processUrl(url string) {
 }
 
 func main() {
-	url := flag.String("url", "", "URL of the episode/season to download")
+	url := flag.String("url", "", "Crunchyroll or YouTube URL to download")
 	urlsFile := flag.String("urls", "", "Path to a text file with one URL per line")
 
 	flag.Usage = func() { printHelp() }
@@ -152,6 +171,12 @@ func main() {
 		printHelp()
 		os.Exit(1)
 	}
+	targets, err := collectCLIURLs(*url, *urlsFile)
+	if err != nil {
+		fmt.Printf("Failed to open URLs file: %s\n", err)
+		os.Exit(1)
+	}
+
 	cfg := loadAppConfig()
 	if *browserLogin {
 		fmt.Println("Opening Crunchyroll sign-in in a temporary browser window...")
@@ -173,59 +198,77 @@ func main() {
 
 		*etpRt = cookie
 	}
+	if *browserLogin || urlsRequireCrunchyrollAuth(targets) {
+		if authErr := prepareCrunchyrollAuth(cfg); authErr != nil {
+			fmt.Println(authErr.Error())
+			os.Exit(1)
+		}
+	}
+
+	if *url == "" && *urlsFile == "" {
+		return
+	}
+
+	if *urlsFile != "" {
+		fmt.Printf("Found %d URLs to download\n\n", len(targets))
+		for i, u := range targets {
+			fmt.Printf("=== [%d/%d] %s ===\n", i+1, len(targets), u)
+			processUrl(u)
+			fmt.Println()
+		}
+		return
+	}
+	processUrl(*url)
+}
+
+func collectCLIURLs(single, filePath string) ([]string, error) {
+	if filePath != "" {
+		return readURLFile(filePath)
+	}
+	single = strings.TrimSpace(single)
+	if single == "" {
+		return nil, nil
+	}
+	return []string{single}, nil
+}
+
+func readURLFile(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var urls []string
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && strings.HasPrefix(line, "http") {
+			urls = append(urls, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return urls, nil
+}
+
+func prepareCrunchyrollAuth(cfg appConfig) error {
 	if *etpRt == "" {
 		if saved := cfg.EtpRt; saved != "" {
 			*etpRt = saved
 		}
 	}
 	if *etpRt == "" {
-		fmt.Println("Error: -etp-rt is required.")
-		fmt.Println("To get your etp_rt cookie:")
-		fmt.Println("  1. Re-run with -browser-login, or log in to crunchyroll.com")
-		fmt.Println("  2. For manual setup, open Developer Tools")
-		fmt.Println("     Firefox:  Storage → Cookies → etp_rt")
-		fmt.Println("     Chrome:   Application → Cookies → etp_rt")
-		fmt.Println("\nRun with -help for full usage information.")
-		os.Exit(1)
+		return fmt.Errorf("Error: -etp-rt is required.\nTo get your etp_rt cookie:\n  1. Re-run with -browser-login, or log in to crunchyroll.com\n  2. For manual setup, open Developer Tools\n     Firefox:  Storage → Cookies → etp_rt\n     Chrome:   Application → Cookies → etp_rt\n\nRun with -help for full usage information.")
 	}
-
 	if err := RefreshAccessToken(*etpRt); err != nil {
-		fmt.Printf("Error: failed to sign in with the etp_rt cookie: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Error: failed to sign in with the etp_rt cookie: %s", err)
 	}
 	if *browserLogin {
 		cfg.EtpRt = *etpRt
 		saveAppConfig(cfg)
 		fmt.Println("Signed in successfully. The session cookie was saved.")
 	}
-	if *url == "" && *urlsFile == "" {
-		return
-	}
-
-	if *urlsFile != "" {
-		file, err := os.Open(*urlsFile)
-		if err != nil {
-			fmt.Printf("Failed to open URLs file: %s\n", err)
-			os.Exit(1)
-		}
-		defer file.Close()
-
-		scanner := bufio.NewScanner(file)
-		var urls []string
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line != "" && strings.HasPrefix(line, "http") {
-				urls = append(urls, line)
-			}
-		}
-
-		fmt.Printf("Found %d URLs to download\n\n", len(urls))
-		for i, u := range urls {
-			fmt.Printf("=== [%d/%d] %s ===\n", i+1, len(urls), u)
-			processUrl(u)
-			fmt.Println()
-		}
-	} else {
-		processUrl(*url)
-	}
+	return nil
 }

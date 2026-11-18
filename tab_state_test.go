@@ -13,6 +13,7 @@ func TestTabRunIconName(t *testing.T) {
 	}{
 		{name: "download idle", state: tabIdle, kind: tabKindDownload, want: "download"},
 		{name: "convert idle", state: tabIdle, kind: tabKindConvert, want: "mediaVideo"},
+		{name: "youtube idle", state: tabIdle, kind: tabKindYouTube, want: "mediaPlay"},
 		{name: "running", state: tabRunning, kind: tabKindDownload, want: "viewRefresh"},
 		{name: "complete", state: tabComplete, kind: tabKindConvert, want: "confirm"},
 		{name: "stopped", state: tabStopped, kind: tabKindDownload, want: "cancel"},
@@ -42,6 +43,12 @@ func TestNumberedSessionTitle(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	if got := numberedSessionTitle(tabKindConvert, 3); got != "Convert 3" {
+		t.Fatalf("got %q", got)
+	}
+	if got := numberedSessionTitle(tabKindYouTube, 1); got != "YouTube" {
+		t.Fatalf("got %q", got)
+	}
+	if got := numberedSessionTitle(tabKindYouTube, 2); got != "YouTube 2" {
 		t.Fatalf("got %q", got)
 	}
 }

@@ -8,6 +8,7 @@ const (
 	tabKindChooser tabKind = iota
 	tabKindDownload
 	tabKindConvert
+	tabKindYouTube
 )
 
 type tabRunState int
@@ -31,14 +32,20 @@ func tabRunIconName(state tabRunState, kind tabKind) string {
 		if kind == tabKindConvert {
 			return "mediaVideo"
 		}
+		if kind == tabKindYouTube {
+			return "mediaPlay"
+		}
 		return "download"
 	}
 }
 
 func numberedSessionTitle(kind tabKind, seq int) string {
 	base := "Download"
-	if kind == tabKindConvert {
+	switch kind {
+	case tabKindConvert:
 		base = "Convert"
+	case tabKindYouTube:
+		base = "YouTube"
 	}
 	if seq <= 1 {
 		return base
