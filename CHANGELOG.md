@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Convert tab: added an orientation control to leave a video as it is, or turn it 90° clockwise, 180°, or 90° counterclockwise
+- Added YouTube video and playlist downloads in a desktop tab and on the CLI, saving MP4 files through yt-dlp at the selected video height
 - Added a cross-platform desktop UI (macOS, Linux, Windows) for fetching series/episode lists and downloading with the same options as the CLI
 - Added `build.sh` for the CLI binary and `build_UI.sh` for the GUI binary
 - Desktop UI: info tooltip for `etp_rt`, Lookup next to the URL, and download options shown only after a successful lookup of available audio/subs/quality/seasons

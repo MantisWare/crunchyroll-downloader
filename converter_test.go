@@ -39,7 +39,7 @@ func TestConversionOutputName(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			actual := conversionOutputName(test.input, test.quality)
+			actual := conversionOutputName(test.input, test.quality, "")
 			if actual != test.expected {
 				t.Fatalf("conversionOutputName() = %q, want %q", actual, test.expected)
 			}
@@ -57,7 +57,7 @@ func TestConversionJobsForFolder(t *testing.T) {
 		}
 	}
 
-	jobs, err := conversionJobsForFolder(dir, "480p")
+	jobs, err := conversionJobsForFolder(dir, "480p", "")
 	if err != nil {
 		t.Fatalf("conversionJobsForFolder() error = %v", err)
 	}
@@ -82,7 +82,7 @@ func TestConversionJobsForFilesDoesNotOverwriteInput(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 
-	jobs, err := conversionJobsForFiles([]string{path}, "720p")
+	jobs, err := conversionJobsForFiles([]string{path}, "720p", "")
 	if err != nil {
 		t.Fatalf("conversionJobsForFiles() error = %v", err)
 	}
@@ -91,5 +91,47 @@ func TestConversionJobsForFilesDoesNotOverwriteInput(t *testing.T) {
 	}
 	if jobs[0].Output == path {
 		t.Fatal("conversion output must not overwrite its input")
+	}
+}
+
+func TestConversionRotation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		rotation string
+		filter   string
+		name     string
+	}{
+		{rotation: "", filter: "scale=-2:720", name: "Episode 01 [720p].mp4"},
+		{rotation: "No change", filter: "scale=-2:720", name: "Episode 01 [720p].mp4"},
+		{rotation: "90° clockwise", filter: "scale=-2:720,transpose=1", name: "Episode 01 [720p] [90cw].mp4"},
+		{rotation: "180°", filter: "scale=-2:720,transpose=1,transpose=1", name: "Episode 01 [720p] [180].mp4"},
+		{rotation: "90° counterclockwise", filter: "scale=-2:720,transpose=2", name: "Episode 01 [720p] [90ccw].mp4"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.rotation, func(t *testing.T) {
+			t.Parallel()
+			filter, err := conversionVideoFilter("720p", test.rotation)
+			if err != nil {
+				t.Fatalf("conversionVideoFilter() error = %v", err)
+			}
+			if filter != test.filter {
+				t.Fatalf("conversionVideoFilter() = %q, want %q", filter, test.filter)
+			}
+			got := conversionOutputName("/videos/Episode 01.mkv", "720p", test.rotation)
+			if got != test.name {
+				t.Fatalf("conversionOutputName() = %q, want %q", got, test.name)
+			}
+		})
+	}
+
+	replaced := conversionOutputName("/videos/Episode 01 [1080p] [90ccw].mkv", "720p", "90° clockwise")
+	if replaced != "Episode 01 [720p] [90cw].mp4" {
+		t.Fatalf("replaced rotation name = %q", replaced)
+	}
+	if _, err := conversionVideoFilter("720p", "sideways"); err == nil {
+		t.Fatal("unknown rotation was accepted")
 	}
 }

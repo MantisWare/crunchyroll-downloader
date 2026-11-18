@@ -32,14 +32,71 @@ func isSupportedVideo(path string) bool {
 }
 
 var trailingQualityTag = regexp.MustCompile(` \[\d+p\]$`)
+var trailingRotationTag = regexp.MustCompile(` \[(?:90cw|90ccw|180)\]$`)
 
-func conversionOutputName(input, videoQuality string) string {
-	base := strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
-	base = trailingQualityTag.ReplaceAllString(base, "")
-	return base + " [" + videoQuality + "].mp4"
+const (
+	rotationNone  = "No change"
+	rotation90CW  = "90° clockwise"
+	rotation180   = "180°"
+	rotation90CCW = "90° counterclockwise"
+)
+
+var convertRotations = []string{rotationNone, rotation90CW, rotation180, rotation90CCW}
+
+func validRotation(rotation string) bool {
+	for _, option := range convertRotations {
+		if option == rotation {
+			return true
+		}
+	}
+	return false
 }
 
-func conversionJobsForFiles(paths []string, videoQuality string) ([]conversionJob, error) {
+func conversionOutputName(input, videoQuality, rotation string) string {
+	base := strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
+	base = trailingRotationTag.ReplaceAllString(base, "")
+	base = trailingQualityTag.ReplaceAllString(base, "")
+	name := base + " [" + videoQuality + "]"
+	if tag := rotationFileTag(rotation); tag != "" {
+		name += " [" + tag + "]"
+	}
+	return name + ".mp4"
+}
+
+func rotationFileTag(rotation string) string {
+	switch rotation {
+	case rotation90CW:
+		return "90cw"
+	case rotation180:
+		return "180"
+	case rotation90CCW:
+		return "90ccw"
+	default:
+		return ""
+	}
+}
+
+func conversionVideoFilter(videoQuality, rotation string) (string, error) {
+	height, err := strconv.Atoi(strings.TrimSuffix(videoQuality, "p"))
+	if err != nil || height <= 0 {
+		return "", fmt.Errorf("invalid video quality %q", videoQuality)
+	}
+	scale := fmt.Sprintf("scale=-2:%d", height)
+	switch rotation {
+	case "", rotationNone:
+		return scale, nil
+	case rotation90CW:
+		return scale + ",transpose=1", nil
+	case rotation180:
+		return scale + ",transpose=1,transpose=1", nil
+	case rotation90CCW:
+		return scale + ",transpose=2", nil
+	default:
+		return "", fmt.Errorf("unsupported rotation %q", rotation)
+	}
+}
+
+func conversionJobsForFiles(paths []string, videoQuality, rotation string) ([]conversionJob, error) {
 	jobs := make([]conversionJob, 0, len(paths))
 	seen := make(map[string]bool)
 
@@ -58,7 +115,7 @@ func conversionJobsForFiles(paths []string, videoQuality string) ([]conversionJo
 			continue
 		}
 
-		output := filepath.Join(filepath.Dir(clean), conversionOutputName(clean, videoQuality))
+		output := filepath.Join(filepath.Dir(clean), conversionOutputName(clean, videoQuality, rotation))
 		if output == clean {
 			base := strings.TrimSuffix(filepath.Base(output), filepath.Ext(output))
 			output = filepath.Join(filepath.Dir(clean), base+" converted.mp4")
@@ -73,7 +130,7 @@ func conversionJobsForFiles(paths []string, videoQuality string) ([]conversionJo
 	return jobs, nil
 }
 
-func conversionJobsForFolder(folder, videoQuality string) ([]conversionJob, error) {
+func conversionJobsForFolder(folder, videoQuality, rotation string) ([]conversionJob, error) {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
 		return nil, fmt.Errorf("reading folder %s: %w", folder, err)
@@ -92,20 +149,20 @@ func conversionJobsForFolder(folder, videoQuality string) ([]conversionJob, erro
 		}
 	}
 
-	jobs, err := conversionJobsForFiles(paths, videoQuality)
+	jobs, err := conversionJobsForFiles(paths, videoQuality, rotation)
 	if err != nil {
 		return nil, err
 	}
 	for i := range jobs {
-		jobs[i].Output = filepath.Join(outputDir, conversionOutputName(jobs[i].Input, videoQuality))
+		jobs[i].Output = filepath.Join(outputDir, conversionOutputName(jobs[i].Input, videoQuality, rotation))
 	}
 	return jobs, nil
 }
 
-func convertVideo(env jobEnv, job conversionJob, videoQuality, audioQuality string) error {
-	height, err := strconv.Atoi(strings.TrimSuffix(videoQuality, "p"))
-	if err != nil || height <= 0 {
-		return fmt.Errorf("invalid video quality %q", videoQuality)
+func convertVideo(env jobEnv, job conversionJob, videoQuality, audioQuality, rotation string) error {
+	filter, err := conversionVideoFilter(videoQuality, rotation)
+	if err != nil {
+		return err
 	}
 	if _, err := strconv.Atoi(strings.TrimSuffix(audioQuality, "k")); err != nil {
 		return fmt.Errorf("invalid audio quality %q", audioQuality)
@@ -122,7 +179,7 @@ func convertVideo(env jobEnv, job conversionJob, videoQuality, audioQuality stri
 		"-y",
 		"-nostdin",
 		"-i", job.Input,
-		"-vf", fmt.Sprintf("scale=-2:%d", height),
+		"-vf", filter,
 		"-c:v", "libx264",
 		"-preset", "medium",
 		"-crf", "23",

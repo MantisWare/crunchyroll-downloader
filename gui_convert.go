@@ -31,6 +31,7 @@ type convertSession struct {
 	sourceEntry   *widget.Entry
 	videoSel      *widget.Select
 	audioSel      *widget.Select
+	rotationSel   *widget.Select
 	status        *widget.Label
 	logEntry      *widget.Entry
 	logRaw        string
@@ -97,6 +98,9 @@ func (s *convertSession) build() {
 	s.audioSel = widget.NewSelect(convertAudioQualities, nil)
 	s.audioSel.SetSelected(pickPreferred(convertAudioQualities, s.app.defaults.convertAudio))
 
+	s.rotationSel = widget.NewSelect(convertRotations, nil)
+	s.rotationSel.SetSelected(pickPreferred(convertRotations, s.app.defaults.convertRotation))
+
 	s.status = widget.NewLabel("Choose a video file or folder to convert.")
 	s.status.Wrapping = fyne.TextWrapWord
 
@@ -116,7 +120,8 @@ func (s *convertSession) build() {
 		}
 		videoQuality := s.convertVideoQuality()
 		audioQuality := s.convertAudioQuality()
-		go s.runConversion(jobs, videoQuality, audioQuality)
+		rotation := s.convertRotation()
+		go s.runConversion(jobs, videoQuality, audioQuality, rotation)
 	})
 	s.convertBtn.Importance = widget.HighImportance
 	s.convertBtn.Disable()
@@ -147,6 +152,13 @@ func (s *convertSession) build() {
 			return
 		}
 		s.app.defaults.convertAudio = v
+		s.app.persistSettings()
+	}
+	s.rotationSel.OnChanged = func(v string) {
+		if s.app.ignoreSelect || v == "" {
+			return
+		}
+		s.app.defaults.convertRotation = v
 		s.app.persistSettings()
 	}
 }
@@ -193,6 +205,7 @@ func (s *convertSession) content() fyne.CanvasObject {
 	options := widget.NewForm(
 		widget.NewFormItem("Video quality", s.videoSel),
 		widget.NewFormItem("Audio quality", s.audioSel),
+		widget.NewFormItem("Orientation", s.rotationSel),
 	)
 
 	logFloor := canvas.NewRectangle(color.Transparent)
@@ -326,7 +339,7 @@ func (s *convertSession) refreshConvertSource() {
 func (s *convertSession) currentConversionJobs() ([]conversionJob, error) {
 	videoQuality := s.convertVideoQuality()
 	if s.convertFolder != "" {
-		jobs, err := conversionJobsForFolder(s.convertFolder, videoQuality)
+		jobs, err := conversionJobsForFolder(s.convertFolder, videoQuality, s.convertRotation())
 		if err != nil {
 			return nil, err
 		}
@@ -336,7 +349,7 @@ func (s *convertSession) currentConversionJobs() ([]conversionJob, error) {
 		return jobs, nil
 	}
 
-	jobs, err := conversionJobsForFiles(s.convertPaths, videoQuality)
+	jobs, err := conversionJobsForFiles(s.convertPaths, videoQuality, s.convertRotation())
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +359,7 @@ func (s *convertSession) currentConversionJobs() ([]conversionJob, error) {
 	return jobs, nil
 }
 
-func (s *convertSession) runConversion(jobs []conversionJob, videoQuality, audioQuality string) {
+func (s *convertSession) runConversion(jobs []conversionJob, videoQuality, audioQuality, rotation string) {
 	s.setConvertBusy(true)
 	defer s.setConvertBusy(false)
 
@@ -389,7 +402,7 @@ func (s *convertSession) runConversion(jobs []conversionJob, videoQuality, audio
 		))
 		jobPrintf(env, "\nConverting: %s\nOutput: %s\n", job.Input, job.Output)
 
-		err := convertVideo(env, job, videoQuality, audioQuality)
+		err := convertVideo(env, job, videoQuality, audioQuality, rotation)
 		if err != nil {
 			if env.cancelled() {
 				break
@@ -515,6 +528,16 @@ func (s *convertSession) convertAudioQuality() string {
 		return "128k"
 	}
 	return s.audioSel.Selected
+}
+
+func (s *convertSession) convertRotation() string {
+	if s.rotationSel == nil || s.rotationSel.Selected == "" {
+		if validRotation(s.app.defaults.convertRotation) {
+			return s.app.defaults.convertRotation
+		}
+		return rotationNone
+	}
+	return s.rotationSel.Selected
 }
 
 func (s *convertSession) appendLog(chunk string) {

@@ -12,6 +12,7 @@ Built in Go. A temporary browser is used only for optional account sign-in; down
 - CLI and a simple cross-platform desktop UI (macOS, Linux, Windows)
 - One-click Crunchyroll sign-in through an isolated Chrome, Edge, Brave, or Chromium window
 - Paste a Crunchyroll URL in the UI to list episodes (or a single episode) and pick download options
+- Paste a YouTube video or playlist URL in the YouTube tab, or pass it to `-url`, and save an MP4 at 1080p, 720p, 480p, or 360p
 - Convert a local video file, multiple dropped files, or a full folder to a selected video/audio quality
 - Choose audio language (dub) and subtitle language per download
 - Configurable video quality (1080p, 720p, etc.) and audio quality (192k, 128k, etc.)
@@ -35,6 +36,7 @@ Built in Go. A temporary browser is used only for optional account sign-in; down
 | DRM              | gowidevine (Widevine CDM + PSSH extraction)    |
 | Manifest Parsing | go-mpd (DASH MPD)                              |
 | Muxing           | FFmpeg (external, must be installed)            |
+| YouTube          | yt-dlp 2026.08.19+ and Deno (external)          |
 | Auth             | Managed browser sign-in or `etp_rt` cookie     |
 | Output           | MKV container with metadata                    |
 
@@ -50,7 +52,9 @@ crunchyroll-downloader/
 ├── assets/                # Default location for .wvd / client_id.bin / private_key.pem
 ├── bin/                   # Local build output (gitignored)
 ├── main.go                # CLI flags, URL routing, audio language GUID resolution
+├── youtube.go             # YouTube URL classification, yt-dlp lookup, and MP4 download
 ├── gui.go                 # Desktop UI (built with -tags gui)
+├── gui_youtube.go         # YouTube tab (built with -tags gui)
 ├── gui_actions.go         # UI fetch / download wiring
 ├── gui_browser_login.go   # UI sign-in state, cancellation, and feedback
 ├── gui_theme.go           # Dark Crunchyroll-style Fyne theme
@@ -89,6 +93,7 @@ crunchyroll-downloader/
 - [Go](https://go.dev/dl/) (for building from source)
 - A C compiler for the **desktop UI** (Xcode Command Line Tools on macOS, `gcc`/`libgl` on Linux, MinGW on Windows)
 - [FFmpeg](https://www.ffmpeg.org/download.html#get-packages) (must be in PATH)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) 2026.08.19 or newer, and [Deno](https://deno.com/), for YouTube downloads
 - A Crunchyroll account (Premium required for Premium-only content)
 - Chrome, Edge, Brave, or Chromium for automatic browser sign-in (manual cookie entry remains available)
 - A Widevine CDM — either a `.wvd` file, or a `client_id.bin` + `private_key.pem` pair
@@ -116,7 +121,7 @@ The CLI binary is output to `bin/crunchyroll-downloader`.
 ./bin/crunchyroll-downloader-gui
 ```
 
-The desktop app has two tabs:
+The desktop app has a New tab that opens Download, YouTube, or Convert.
 
 #### Download
 
@@ -129,11 +134,21 @@ The desktop app has two tabs:
 7. Click **Stop** to interrupt a download in progress; partial files are cleaned up
 8. Click **Reset** to clear the URL, episode list, and log so you can paste another link
 
+#### YouTube
+
+1. Open a **YouTube** tab from **New**.
+2. Paste a watch, Shorts, `youtu.be`, or `/playlist` link and click **Lookup**.
+3. Pick a video quality. A playlist shows a checklist; a single video is ready to download.
+4. Click **Download** or **Download selected**. Each video is saved as an MP4, and a playlist is saved in its own folder.
+5. Click **Stop** to kill the current `yt-dlp` process and remove the partial file.
+
+YouTube downloads do not ask for a Crunchyroll sign-in, audio language, or subtitles. They require `yt-dlp` 2026.08.19 or newer, Deno, and FFmpeg on `PATH`. The same links work from the CLI with `-url` and `-video-quality`. A YouTube-only command does not need `-etp-rt`.
+
 #### Convert
 
 1. Open the **Convert** tab.
 2. Drop one or more video files—or a folder—onto the tab. You can also use **Choose file** or **Choose folder**.
-3. Select the target video and audio quality.
+3. Select the target video quality, audio quality, and orientation. Orientation can leave the picture as it is, or turn it 90° clockwise, 180°, or 90° counterclockwise.
 4. Click **Convert**. FFmpeg creates H.264/AAC MP4 files named like `Show S01E02 Episode Title [720p].mp4`.
 5. A folder conversion writes its files into a `converted_720p/` folder inside the selected folder.
 6. Click **Stop** to cancel the current FFmpeg process and the remaining queue.

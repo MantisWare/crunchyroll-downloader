@@ -18,6 +18,7 @@ type appConfig struct {
 	OutputDir           string `json:"output_dir"`
 	ConvertVideoQuality string `json:"convert_video_quality"`
 	ConvertAudioQuality string `json:"convert_audio_quality"`
+	ConvertRotation     string `json:"convert_rotation"`
 	// DubFallback downloads an episode's default audio when the selected dub
 	// is missing instead of skipping the episode.
 	DubFallback bool `json:"dub_fallback"`
@@ -42,6 +43,7 @@ func defaultAppConfig() appConfig {
 		OutputDir:           ".",
 		ConvertVideoQuality: "720p",
 		ConvertAudioQuality: "128k",
+		ConvertRotation:     rotationNone,
 		WindowWidth:         defaultWindowWidth,
 		WindowHeight:        defaultWindowHeight,
 	}
@@ -110,6 +112,9 @@ func normalizeAppConfig(cfg appConfig) appConfig {
 	}
 	if cfg.ConvertAudioQuality == "" {
 		cfg.ConvertAudioQuality = "128k"
+	}
+	if !validRotation(cfg.ConvertRotation) {
+		cfg.ConvertRotation = rotationNone
 	}
 	// A missing or nonsensical saved size falls back to the default. Fyne
 	// clamps anything smaller than the content minimum when the window opens.

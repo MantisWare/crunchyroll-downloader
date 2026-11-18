@@ -20,6 +20,8 @@ func tabRunIcon(state tabRunState, kind tabKind) fyne.Resource {
 		return theme.CancelIcon()
 	case "mediaVideo":
 		return theme.MediaVideoIcon()
+	case "mediaPlay":
+		return theme.MediaPlayIcon()
 	default:
 		return theme.DownloadIcon()
 	}
@@ -122,13 +124,16 @@ func (g *guiApp) chooserContent(item *container.TabItem) fyne.CanvasObject {
 		g.becomeDownloadTab(item)
 	})
 	downloadBtn.Importance = widget.HighImportance
+	youtubeBtn := widget.NewButtonWithIcon("YouTube", theme.MediaPlayIcon(), func() {
+		g.becomeYouTubeTab(item)
+	})
 	convertBtn := widget.NewButtonWithIcon("Convert", theme.MediaVideoIcon(), func() {
 		g.becomeConvertTab(item)
 	})
 
 	return container.NewCenter(container.NewVBox(
 		hint,
-		container.NewGridWithColumns(2, downloadBtn, convertBtn),
+		container.NewGridWithColumns(3, downloadBtn, youtubeBtn, convertBtn),
 	))
 }
 
@@ -138,6 +143,20 @@ func (g *guiApp) becomeDownloadTab(item *container.TabItem) {
 	s.tab = item
 	item.Text = s.title()
 	item.Icon = tabRunIcon(tabIdle, tabKindDownload)
+	item.Content = s.content()
+	g.bind(item, s)
+	if g.tabs != nil {
+		g.tabs.Refresh()
+		g.tabs.Select(item)
+	}
+}
+
+func (g *guiApp) becomeYouTubeTab(item *container.TabItem) {
+	g.unbind(item)
+	s := g.newYouTubeSession()
+	s.tab = item
+	item.Text = s.title()
+	item.Icon = tabRunIcon(tabIdle, tabKindYouTube)
 	item.Content = s.content()
 	g.bind(item, s)
 	if g.tabs != nil {

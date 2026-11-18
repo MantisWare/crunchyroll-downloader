@@ -31,14 +31,15 @@ var defaultVideoQualities = []string{"1080p", "720p", "480p", "360p"}
 var defaultAudioQualities = []string{"192k", "128k", "96k"}
 
 type sessionDefaults struct {
-	audioLang    string
-	subsLang     string
-	videoQuality string
-	audioQuality string
-	outputDir    string
-	convertVideo string
-	convertAudio string
-	dubFallback  bool
+	audioLang       string
+	subsLang        string
+	videoQuality    string
+	audioQuality    string
+	outputDir       string
+	convertVideo    string
+	convertAudio    string
+	convertRotation string
+	dubFallback     bool
 }
 
 type tabSession interface {
@@ -67,6 +68,7 @@ type guiApp struct {
 
 	downloadSeq int
 	convertSeq  int
+	youtubeSeq  int
 
 	// winSize is the last content size seen while the window was open. The
 	// canvas stops reporting a usable size once the window closes, so the
@@ -89,14 +91,15 @@ func main() {
 	g := &guiApp{
 		sessions: make(map[*container.TabItem]tabSession),
 		defaults: sessionDefaults{
-			audioLang:    cfg.AudioLang,
-			subsLang:     cfg.SubsLang,
-			videoQuality: cfg.VideoQuality,
-			audioQuality: cfg.AudioQuality,
-			outputDir:    cfg.OutputDir,
-			convertVideo: cfg.ConvertVideoQuality,
-			convertAudio: cfg.ConvertAudioQuality,
-			dubFallback:  cfg.DubFallback,
+			audioLang:       cfg.AudioLang,
+			subsLang:        cfg.SubsLang,
+			videoQuality:    cfg.VideoQuality,
+			audioQuality:    cfg.AudioQuality,
+			outputDir:       cfg.OutputDir,
+			convertVideo:    cfg.ConvertVideoQuality,
+			convertAudio:    cfg.ConvertAudioQuality,
+			convertRotation: cfg.ConvertRotation,
+			dubFallback:     cfg.DubFallback,
 		},
 	}
 	g.win = a.NewWindow("Crunchyroll Downloader")
@@ -171,6 +174,7 @@ func (g *guiApp) persistSettings() {
 		OutputDir:           g.defaults.outputDir,
 		ConvertVideoQuality: g.defaults.convertVideo,
 		ConvertAudioQuality: g.defaults.convertAudio,
+		ConvertRotation:     g.defaults.convertRotation,
 		DubFallback:         g.defaults.dubFallback,
 		WindowWidth:         g.winSize.Width,
 		WindowHeight:        g.winSize.Height,
