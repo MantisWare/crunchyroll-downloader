@@ -73,7 +73,7 @@ EXAMPLES
   Batch download from a file:
     crunchyroll-downloader -urls list.txt -audio-lang pt-BR -etp-rt YOUR_TOKEN
 
-  Download a YouTube video:
+  Download a video (YouTube or another page):
     crunchyroll-downloader \
       -url https://www.youtube.com/watch?v=jNQXAC9IVRw \
       -video-quality 720p

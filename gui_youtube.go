@@ -127,7 +127,7 @@ func (s *youtubeSession) build() {
 		s.app.persistSettings()
 	}
 
-	s.status = widget.NewLabel("Paste a video URL, then click Lookup.")
+	s.status = widget.NewLabel("Paste a YouTube link or another video page, then click Lookup.")
 	s.status.Wrapping = fyne.TextWrapWord
 
 	s.logEntry = widget.NewMultiLineEntry()
@@ -499,7 +499,7 @@ func (s *youtubeSession) resetForNewURL() {
 	s.clearLog()
 	s.hideProgress()
 	s.resetLookupState()
-	s.status.SetText("Paste a video URL, then click Lookup.")
+	s.status.SetText("Paste a YouTube link or another video page, then click Lookup.")
 	s.state = tabIdle
 	s.app.refreshTabChrome(s)
 }

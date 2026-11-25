@@ -489,18 +489,18 @@ func validateYouTubeToolVersion(output string) error {
 func ensureYouTubeTools() error {
 	ytdlp, err := exec.LookPath("yt-dlp")
 	if err != nil {
-		return fmt.Errorf("yt-dlp is required on PATH for YouTube downloads")
+		return fmt.Errorf("yt-dlp is required on PATH for video downloads")
 	}
 	if _, err := exec.LookPath("deno"); err != nil {
-		return fmt.Errorf("deno is required on PATH for YouTube downloads")
+		return fmt.Errorf("deno is required on PATH for video downloads")
 	}
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return fmt.Errorf("ffmpeg is required on PATH for YouTube downloads")
+		return fmt.Errorf("ffmpeg is required on PATH for video downloads")
 	}
 
 	out, err := exec.Command(ytdlp, "--version").Output()
 	if err != nil {
-		return fmt.Errorf("yt-dlp is required on PATH for YouTube downloads: %w", err)
+		return fmt.Errorf("yt-dlp is required on PATH for video downloads: %w", err)
 	}
 	return validateYouTubeToolVersion(string(out))
 }
@@ -727,7 +727,7 @@ func downloadYouTubeJobs(env jobEnv, jobs []youtubeJob, quality string, onProgre
 		reportYouTubeProgress(onProgress, i+1, total, 100)
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d YouTube video(s) failed", failed)
+		return fmt.Errorf("%d video download(s) failed", failed)
 	}
 	return nil
 }

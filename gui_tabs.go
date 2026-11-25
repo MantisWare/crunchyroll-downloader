@@ -120,21 +120,41 @@ func (g *guiApp) chooserContent(item *container.TabItem) fyne.CanvasObject {
 	hint := widget.NewLabel("What should this tab do?")
 	hint.Alignment = fyne.TextAlignCenter
 
-	downloadBtn := widget.NewButtonWithIcon("Download", theme.DownloadIcon(), func() {
-		g.becomeDownloadTab(item)
-	})
-	downloadBtn.Importance = widget.HighImportance
-	youtubeBtn := widget.NewButtonWithIcon("Video", theme.MediaPlayIcon(), func() {
-		g.becomeYouTubeTab(item)
-	})
-	convertBtn := widget.NewButtonWithIcon("Convert", theme.MediaVideoIcon(), func() {
-		g.becomeConvertTab(item)
-	})
+	download := chooserChoice(
+		"Download",
+		"Crunchyroll episodes and seasons.",
+		theme.DownloadIcon(),
+		widget.HighImportance,
+		func() { g.becomeDownloadTab(item) },
+	)
+	video := chooserChoice(
+		"Video download",
+		"YouTube videos and playlists, and other video pages.",
+		theme.MediaPlayIcon(),
+		widget.MediumImportance,
+		func() { g.becomeYouTubeTab(item) },
+	)
+	convert := chooserChoice(
+		"Convert",
+		"Local video files, or every video in a folder.",
+		theme.MediaVideoIcon(),
+		widget.MediumImportance,
+		func() { g.becomeConvertTab(item) },
+	)
 
 	return container.NewCenter(container.NewVBox(
 		hint,
-		container.NewGridWithColumns(3, downloadBtn, youtubeBtn, convertBtn),
+		container.NewGridWithColumns(3, download, video, convert),
 	))
+}
+
+func chooserChoice(label, description string, icon fyne.Resource, importance widget.Importance, tapped func()) fyne.CanvasObject {
+	button := widget.NewButtonWithIcon(label, icon, tapped)
+	button.Importance = importance
+	text := widget.NewLabel(description)
+	text.Wrapping = fyne.TextWrapWord
+	text.Alignment = fyne.TextAlignCenter
+	return container.NewVBox(button, text)
 }
 
 func (g *guiApp) becomeDownloadTab(item *container.TabItem) {
