@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image/color"
@@ -30,25 +31,30 @@ type youtubeSession struct {
 	run   cancellable
 	state tabRunState
 
-	urlEntry    *widget.Entry
-	outEntry    *widget.Entry
-	videoSel    *widget.Select
-	status      *widget.Label
-	logEntry    *widget.Entry
-	logRaw      string
-	progress    *widget.ProgressBar
-	lookupBtn   *widget.Button
-	dlBtn       *widget.Button
-	stopBtn     *widget.Button
-	resetBtn    *widget.Button
-	optionsBox  *fyne.Container
-	listBox     *fyne.Container
-	selectRow   *fyne.Container
-	tabTitle    string
-	lookedUpURL string
-	lookup      youtubeLookup
-	checks      []youtubeCheck
-	filling     bool
+	urlEntry     *widget.Entry
+	outEntry     *widget.Entry
+	videoSel     *widget.Select
+	status       *widget.Label
+	logEntry     *widget.Entry
+	logRaw       string
+	progress     *widget.ProgressBar
+	lookupBtn    *widget.Button
+	dlBtn        *widget.Button
+	stopBtn      *widget.Button
+	resetBtn     *widget.Button
+	optionsBox   *fyne.Container
+	listBox      *fyne.Container
+	selectRow    *fyne.Container
+	tabTitle     string
+	lookedUpURL  string
+	lookup       youtubeLookup
+	checks       []youtubeCheck
+	signInBtn    *widget.Button
+	doneBtn      *widget.Button
+	signInMu     sync.Mutex
+	signInCancel context.CancelFunc
+	signInDone   chan struct{}
+	filling      bool
 
 	mu   sync.Mutex
 	busy bool
@@ -94,7 +100,7 @@ func (g *guiApp) newYouTubeSession() *youtubeSession {
 
 func (s *youtubeSession) build() {
 	s.urlEntry = widget.NewEntry()
-	s.urlEntry.SetPlaceHolder("https://www.youtube.com/watch?v=... or /playlist?list=...")
+	s.urlEntry.SetPlaceHolder("https://... video or playlist link")
 	s.urlEntry.OnChanged = func(v string) {
 		s.onURLChanged(v)
 	}
@@ -121,7 +127,7 @@ func (s *youtubeSession) build() {
 		s.app.persistSettings()
 	}
 
-	s.status = widget.NewLabel("Paste a YouTube URL, then click Lookup.")
+	s.status = widget.NewLabel("Paste a video URL, then click Lookup.")
 	s.status.Wrapping = fyne.TextWrapWord
 
 	s.logEntry = widget.NewMultiLineEntry()
@@ -138,6 +144,14 @@ func (s *youtubeSession) build() {
 	})
 	s.lookupBtn.Importance = widget.HighImportance
 	s.lookupBtn.Disable()
+
+	s.signInBtn = widget.NewButtonWithIcon("Sign in", theme.LoginIcon(), func() {
+		s.startSignIn()
+	})
+	s.doneBtn = widget.NewButton("Done signing in", func() {
+		s.completeSignIn()
+	})
+	s.doneBtn.Hide()
 
 	s.dlBtn = widget.NewButtonWithIcon("Download", theme.DownloadIcon(), func() {
 		lookup := s.lookup
@@ -189,7 +203,7 @@ func (s *youtubeSession) content() fyne.CanvasObject {
 	s.selectRow.Hide()
 
 	form := container.NewVBox(
-		labeled("YouTube URL", container.NewBorder(nil, nil, nil, s.lookupBtn, s.urlEntry)),
+		labeled("Video URL", container.NewBorder(nil, nil, nil, container.NewHBox(s.signInBtn, s.doneBtn, s.lookupBtn), s.urlEntry)),
 		labeled("Save downloads to", container.NewBorder(nil, nil, nil, browse, s.outEntry)),
 		s.optionsBox,
 	)
@@ -230,7 +244,7 @@ func (s *youtubeSession) fetchContent(rawURL string) {
 	s.run.begin()
 	defer s.run.end()
 
-	if _, err := parseYouTubeURL(rawURL); err != nil {
+	if _, err := classifyVideoURL(rawURL); err != nil {
 		s.setStatus(err.Error())
 		return
 	}
@@ -459,6 +473,8 @@ func (s *youtubeSession) setBusy(busy bool) {
 		}
 		if busy {
 			s.lookupBtn.Disable()
+			s.signInBtn.Disable()
+			s.doneBtn.Disable()
 			s.dlBtn.Disable()
 			s.resetBtn.Disable()
 			s.stopBtn.Enable()
@@ -466,6 +482,8 @@ func (s *youtubeSession) setBusy(busy bool) {
 		}
 		s.stopBtn.Disable()
 		s.resetBtn.Enable()
+		s.signInBtn.Enable()
+		s.doneBtn.Enable()
 		if strings.TrimSpace(s.urlEntry.Text) != "" {
 			s.lookupBtn.Enable()
 		}
@@ -481,7 +499,7 @@ func (s *youtubeSession) resetForNewURL() {
 	s.clearLog()
 	s.hideProgress()
 	s.resetLookupState()
-	s.status.SetText("Paste a YouTube URL, then click Lookup.")
+	s.status.SetText("Paste a video URL, then click Lookup.")
 	s.state = tabIdle
 	s.app.refreshTabChrome(s)
 }
@@ -553,6 +571,87 @@ func (s *youtubeSession) setStatus(text string) {
 		}
 		s.status.SetText(text)
 	})
+}
+
+func (s *youtubeSession) startSignIn() {
+	rawURL := strings.TrimSpace(s.urlEntry.Text)
+	if _, err := classifyVideoURL(rawURL); err != nil {
+		s.setStatus(err.Error())
+		return
+	}
+
+	s.signInMu.Lock()
+	if s.signInCancel != nil {
+		cancel := s.signInCancel
+		s.signInMu.Unlock()
+		cancel()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), browserLoginTimeout)
+	done := make(chan struct{})
+	s.signInCancel = cancel
+	s.signInDone = done
+	s.signInMu.Unlock()
+
+	s.signInBtn.SetText("Cancel")
+	s.signInBtn.SetIcon(theme.CancelIcon())
+	s.doneBtn.Show()
+	s.lookupBtn.Disable()
+	s.setStatus("Sign in in the browser, then click Done signing in.")
+
+	go func() {
+		cookies, err := captureVisibleSiteCookies(ctx, rawURL, done)
+		cancel()
+		if err == nil {
+			err = writeVideoCookies(rawURL, cookies)
+		}
+		host, _ := videoCookieHost(rawURL)
+
+		s.signInMu.Lock()
+		s.signInCancel = nil
+		s.signInDone = nil
+		s.signInMu.Unlock()
+
+		fyne.Do(func() {
+			if !s.stillOpen() {
+				return
+			}
+			s.signInBtn.SetText("Sign in")
+			s.signInBtn.SetIcon(theme.LoginIcon())
+			s.doneBtn.Hide()
+			if strings.TrimSpace(s.urlEntry.Text) != "" && !s.isBusy() {
+				s.lookupBtn.Enable()
+			}
+			if err != nil {
+				s.status.SetText(videoSignInStatus(err))
+				return
+			}
+			s.status.SetText("Signed in to " + host)
+		})
+	}()
+}
+
+func (s *youtubeSession) completeSignIn() {
+	s.signInMu.Lock()
+	done := s.signInDone
+	s.signInDone = nil
+	s.signInMu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+func videoSignInStatus(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "Sign-in cancelled. Saved cookies were left unchanged."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "Sign-in timed out after 10 minutes. Saved cookies were left unchanged."
+	case errors.Is(err, errBrowserClosed):
+		return "Browser closed before sign-in finished. Saved cookies were left unchanged."
+	default:
+		return err.Error()
+	}
 }
 
 func (s *youtubeSession) setRunState(state tabRunState) {

@@ -45,10 +45,10 @@ func TestNumberedSessionTitle(t *testing.T) {
 	if got := numberedSessionTitle(tabKindConvert, 3); got != "Convert 3" {
 		t.Fatalf("got %q", got)
 	}
-	if got := numberedSessionTitle(tabKindYouTube, 1); got != "YouTube" {
+	if got := numberedSessionTitle(tabKindYouTube, 1); got != "Video" {
 		t.Fatalf("got %q", got)
 	}
-	if got := numberedSessionTitle(tabKindYouTube, 2); got != "YouTube 2" {
+	if got := numberedSessionTitle(tabKindYouTube, 2); got != "Video 2" {
 		t.Fatalf("got %q", got)
 	}
 }

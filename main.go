@@ -22,7 +22,7 @@ USAGE
   crunchyroll-downloader [options]
 
 OPTIONS
-  -url string          Crunchyroll episode/series URL, or a YouTube video/playlist URL
+  -url string          Crunchyroll episode/series URL, or a video page URL
   -urls string         Path to a text file with one URL per line
   -etp-rt string       The "etp_rt" cookie value from your Crunchyroll account (required for Crunchyroll)
   -browser-login       Open a browser to sign in and save the required cookie
@@ -51,8 +51,8 @@ SETUP
      Must be installed and available in your PATH.
      https://www.ffmpeg.org/download.html
 
-  4. YouTube downloads also need yt-dlp 2026.08.19 or newer, and Deno, on PATH.
-     A YouTube URL does not use the Crunchyroll cookie.
+  4. Video downloads also need yt-dlp 2026.08.19 or newer, and Deno, on PATH.
+     A video page does not use the Crunchyroll cookie. Sign in from the Video tab when a site asks for an account.
 
 EXAMPLES
   Download a single episode (Japanese audio, English subtitles):
@@ -102,10 +102,12 @@ MORE INFO
 }
 
 func processUrl(url string) {
-	if isYouTubeHost(url) {
-		if _, err := parseYouTubeURL(url); err != nil {
-			fmt.Println(err)
-			return
+	if isYouTubeHost(url) || isOtherVideoPage(url) {
+		if isYouTubeHost(url) {
+			if _, err := parseYouTubeURL(url); err != nil {
+				fmt.Println(err)
+				return
+			}
 		}
 		if err := downloadYouTubeURL(defaultJobEnv(), url); err != nil {
 			fmt.Printf("Error: %s\n", err)
@@ -156,7 +158,7 @@ func processUrl(url string) {
 }
 
 func main() {
-	url := flag.String("url", "", "Crunchyroll or YouTube URL to download")
+	url := flag.String("url", "", "Crunchyroll or video page URL to download")
 	urlsFile := flag.String("urls", "", "Path to a text file with one URL per line")
 
 	flag.Usage = func() { printHelp() }

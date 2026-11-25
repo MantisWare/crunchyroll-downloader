@@ -124,7 +124,7 @@ func (g *guiApp) chooserContent(item *container.TabItem) fyne.CanvasObject {
 		g.becomeDownloadTab(item)
 	})
 	downloadBtn.Importance = widget.HighImportance
-	youtubeBtn := widget.NewButtonWithIcon("YouTube", theme.MediaPlayIcon(), func() {
+	youtubeBtn := widget.NewButtonWithIcon("Video", theme.MediaPlayIcon(), func() {
 		g.becomeYouTubeTab(item)
 	})
 	convertBtn := widget.NewButtonWithIcon("Convert", theme.MediaVideoIcon(), func() {

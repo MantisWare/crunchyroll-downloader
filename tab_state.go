@@ -45,7 +45,7 @@ func numberedSessionTitle(kind tabKind, seq int) string {
 	case tabKindConvert:
 		base = "Convert"
 	case tabKindYouTube:
-		base = "YouTube"
+		base = "Video"
 	}
 	if seq <= 1 {
 		return base

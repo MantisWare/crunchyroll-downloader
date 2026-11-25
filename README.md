@@ -12,7 +12,7 @@ Built in Go. A temporary browser is used only for optional account sign-in; down
 - CLI and a simple cross-platform desktop UI (macOS, Linux, Windows)
 - One-click Crunchyroll sign-in through an isolated Chrome, Edge, Brave, or Chromium window
 - Paste a Crunchyroll URL in the UI to list episodes (or a single episode) and pick download options
-- Paste a YouTube video or playlist URL in the YouTube tab, or pass it to `-url`, and save an MP4 at 1080p, 720p, 480p, or 360p
+- Paste a YouTube link, or any other video page URL, in the Video tab, or pass it to `-url`, and save an MP4 at 1080p, 720p, 480p, or 360p
 - Convert a local video file, multiple dropped files, or a full folder to a selected video/audio quality
 - Choose audio language (dub) and subtitle language per download
 - Configurable video quality (1080p, 720p, etc.) and audio quality (192k, 128k, etc.)
@@ -121,7 +121,7 @@ The CLI binary is output to `bin/crunchyroll-downloader`.
 ./bin/crunchyroll-downloader-gui
 ```
 
-The desktop app has a New tab that opens Download, YouTube, or Convert.
+The desktop app has a New tab that opens Download, Video, or Convert.
 
 #### Download
 
@@ -134,15 +134,17 @@ The desktop app has a New tab that opens Download, YouTube, or Convert.
 7. Click **Stop** to interrupt a download in progress; partial files are cleaned up
 8. Click **Reset** to clear the URL, episode list, and log so you can paste another link
 
-#### YouTube
+#### Video
 
-1. Open a **YouTube** tab from **New**.
-2. Paste a watch, Shorts, `youtu.be`, or `/playlist` link and click **Lookup**.
+1. Open a **Video** tab from **New**.
+2. Paste a YouTube link, or any other `http` or `https` video page, and click **Lookup**.
 3. Pick a video quality. A playlist shows a checklist; a single video is ready to download.
 4. Click **Download** or **Download selected**. Each video is saved as an MP4, and a playlist is saved in its own folder.
 5. Click **Stop** to kill the current `yt-dlp` process and remove the partial file.
 
-YouTube downloads do not ask for a Crunchyroll sign-in, audio language, or subtitles. They require `yt-dlp` 2026.08.19 or newer, Deno, and FFmpeg on `PATH`. The same links work from the CLI with `-url` and `-video-quality`. A YouTube-only command does not need `-etp-rt`.
+When `yt-dlp` does not know the site, Lookup loads the page and uses the video it finds there. If the page requires an account, click **Sign in**, log in in the browser, then click **Done signing in** and Lookup again. A Crunchyroll link still belongs on the Download tab.
+
+Video downloads do not ask for a Crunchyroll sign-in, audio language, or subtitles. They require `yt-dlp` 2026.08.19 or newer, Deno, and FFmpeg on `PATH`. Page search also needs Chrome, Edge, Brave, or Chromium. The same links work from the CLI with `-url` and `-video-quality`. A video-only command does not need `-etp-rt`.
 
 #### Convert
 
