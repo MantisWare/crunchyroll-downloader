@@ -2,7 +2,10 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -162,6 +165,58 @@ func TestVideoCookieHost(t *testing.T) {
 	host, err = videoCookieHost("https://m.youtube.com/watch?v=jNQXAC9IVRw")
 	if err != nil || host != "m.youtube.com" {
 		t.Fatalf("videoCookieHost(subdomain) = %q, %v", host, err)
+	}
+}
+
+func TestShouldSearchPage(t *testing.T) {
+	t.Parallel()
+
+	cert := "ERROR: [generic] watch: Unable to download webpage: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain"
+	if !shouldSearchPage(cert) {
+		t.Fatal("certificate failure did not start a page search")
+	}
+	if !shouldSearchPage("ERROR: Unsupported URL: https://example.com/watch") {
+		t.Fatal("unsupported URL did not start a page search")
+	}
+	if shouldSearchPage("ERROR: Private video. Sign in if you've been granted access") {
+		t.Fatal("private video started a page search")
+	}
+}
+
+func TestYtdlpCertEnv(t *testing.T) {
+	t.Parallel()
+
+	if got := ytdlpTLSArgs(""); got != nil {
+		t.Fatalf("ytdlpTLSArgs(empty) = %v", got)
+	}
+	if got, want := joinArgs(ytdlpTLSArgs("/tmp/macos-trust.pem")), "--compat-options no-certifi"; got != want {
+		t.Fatalf("ytdlpTLSArgs = %q", got)
+	}
+
+	env := withCertEnv([]string{"SSL_CERT_FILE=/old", "PATH=/usr/bin"}, "/new/macos-trust.pem")
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "SSL_CERT_FILE=/old") {
+		t.Fatalf("old CA bundle kept: %q", joined)
+	}
+	if !strings.Contains(joined, "SSL_CERT_FILE=/new/macos-trust.pem") || !strings.Contains(joined, "PATH=/usr/bin") {
+		t.Fatalf("cert env = %q", joined)
+	}
+}
+
+func TestTrustedCertBundle(t *testing.T) {
+	got := trustedCertBundle()
+	if runtime.GOOS != "darwin" {
+		if got != "" {
+			t.Fatalf("trustedCertBundle() = %q", got)
+		}
+		return
+	}
+	body, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatalf("trustedCertBundle() file: %v", err)
+	}
+	if !strings.Contains(string(body), "BEGIN CERTIFICATE") {
+		t.Fatal("macOS trust bundle has no certificates")
 	}
 }
 

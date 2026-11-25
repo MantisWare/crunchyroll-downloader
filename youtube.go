@@ -556,7 +556,7 @@ func lookupVideoPage(ctx context.Context, raw string, log io.Writer) (youtubeLoo
 		if errors.Is(err, errCancelled) {
 			return youtubeLookup{}, err
 		}
-		if strings.Contains(detail, "Unsupported URL") {
+		if shouldSearchPage(detail) {
 			if log != nil {
 				fmt.Fprintf(log, "Looking for a video on the page…\n")
 			}
@@ -587,6 +587,22 @@ func lookupVideoPage(ctx context.Context, raw string, log io.Writer) (youtubeLoo
 		}
 	}
 	return lookup, nil
+}
+
+func shouldSearchPage(detail string) bool {
+	markers := []string{
+		"Unsupported URL",
+		"CERTIFICATE_VERIFY_FAILED",
+		"Unable to download webpage",
+		"No video formats found",
+		"There's no video",
+	}
+	for _, marker := range markers {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func ytdlpResultKind(data []byte) youtubeKind {
@@ -788,7 +804,12 @@ func runYTDLP(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return errCancelled
 	}
 
+	bundle := trustedCertBundle()
+	if extra := ytdlpTLSArgs(bundle); len(extra) > 0 {
+		args = append(append([]string{}, extra...), args...)
+	}
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	cmd.Env = withCertEnv(os.Environ(), bundle)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
