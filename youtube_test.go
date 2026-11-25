@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -84,6 +85,83 @@ func TestParseYouTubeURL(t *testing.T) {
 				t.Fatal("parseYouTubeURL() succeeded")
 			}
 		})
+	}
+}
+
+func TestClassifyVideoURL(t *testing.T) {
+	t.Parallel()
+
+	page := "https://afriforumtv.co.za/user/watch/f2ef181c-25a0-41ed-9618-191603dcf123?episodeId=58781465-1f2c-40dc-8f6f-bc7925082559"
+	got, err := classifyVideoURL(page)
+	if err != nil {
+		t.Fatalf("classifyVideoURL(afriforum) error = %v", err)
+	}
+	if got.Kind != youtubePage {
+		t.Fatalf("classifyVideoURL(afriforum) kind = %v", got.Kind)
+	}
+
+	watch, err := classifyVideoURL("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+	if err != nil || watch.Kind != youtubeVideo || watch.VideoID != "jNQXAC9IVRw" {
+		t.Fatalf("classifyVideoURL(youtube) = %+v, %v", watch, err)
+	}
+	if _, err := classifyVideoURL("https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx"); err == nil {
+		t.Fatal("youtube channel was accepted")
+	}
+	if _, err := classifyVideoURL("https://www.crunchyroll.com/watch/GE00198973JAJP/dawn"); err == nil {
+		t.Fatal("crunchyroll page was accepted on the video tab")
+	}
+	if _, err := classifyVideoURL("not a url"); err == nil {
+		t.Fatal("junk URL was accepted")
+	}
+}
+
+func TestChoosePageMedia(t *testing.T) {
+	t.Parallel()
+
+	chosen, err := choosePageMedia([]pageMediaCandidate{
+		{URL: "blob:https://example.com/1", FromVideo: true},
+		{URL: "https://cdn.example/ad.mp4", File: true},
+		{URL: "https://cdn.example/first.m3u8", Manifest: true},
+		{URL: "https://cdn.example/main.m3u8", Manifest: true},
+	})
+	if err != nil || chosen != "https://cdn.example/main.m3u8" {
+		t.Fatalf("choosePageMedia(manifest) = %q, %v", chosen, err)
+	}
+
+	chosen, err = choosePageMedia([]pageMediaCandidate{
+		{URL: "https://cdn.example/main.m3u8", Manifest: true},
+		{URL: "https://cdn.example/play.m3u8", FromVideo: true},
+	})
+	if err != nil || chosen != "https://cdn.example/play.m3u8" {
+		t.Fatalf("choosePageMedia(video) = %q, %v", chosen, err)
+	}
+
+	if _, err := choosePageMedia(nil); !errors.Is(err, errNoPageVideo) {
+		t.Fatalf("empty page error = %v", err)
+	}
+}
+
+func TestManifestBodyEncrypted(t *testing.T) {
+	t.Parallel()
+
+	if !manifestBodyEncrypted(`schemeIdUri="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"`) {
+		t.Fatal("widevine manifest was treated as clear")
+	}
+	if manifestBodyEncrypted("#EXT-X-KEY:METHOD=AES-128,URI=\"https://example/key\"") {
+		t.Fatal("AES-128 HLS was treated as DRM")
+	}
+}
+
+func TestVideoCookieHost(t *testing.T) {
+	t.Parallel()
+
+	host, err := videoCookieHost("https://www.vimeo.com/123")
+	if err != nil || host != "vimeo.com" {
+		t.Fatalf("videoCookieHost(www) = %q, %v", host, err)
+	}
+	host, err = videoCookieHost("https://m.youtube.com/watch?v=jNQXAC9IVRw")
+	if err != nil || host != "m.youtube.com" {
+		t.Fatalf("videoCookieHost(subdomain) = %q, %v", host, err)
 	}
 }
 

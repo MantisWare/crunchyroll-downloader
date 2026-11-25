@@ -28,6 +28,7 @@ type youtubeKind int
 const (
 	youtubeVideo youtubeKind = iota + 1
 	youtubePlaylist
+	youtubePage
 )
 
 type youtubeRef struct {
@@ -37,9 +38,11 @@ type youtubeRef struct {
 }
 
 type youtubeEntry struct {
-	ID    string
-	Title string
-	Index int
+	ID       string
+	Title    string
+	Index    int
+	MediaURL string
+	PageURL  string
 }
 
 type youtubeLookup struct {
@@ -50,9 +53,11 @@ type youtubeLookup struct {
 }
 
 type youtubeJob struct {
-	VideoID string
-	Title   string
-	Output  string
+	VideoID  string
+	Title    string
+	Output   string
+	MediaURL string
+	PageURL  string
 }
 
 var (
@@ -100,6 +105,32 @@ func parseYouTubeURL(raw string) (youtubeRef, error) {
 		return youtubeRef{Kind: youtubePlaylist, PlaylistID: list}, nil
 	}
 	return youtubeRef{}, fmt.Errorf("unrecognized YouTube URL: %s", raw)
+}
+
+func classifyVideoURL(raw string) (youtubeRef, error) {
+	raw = strings.TrimSpace(raw)
+	if isYouTubeHost(raw) {
+		return parseYouTubeURL(raw)
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return youtubeRef{}, fmt.Errorf("unrecognized video URL: %s", raw)
+	}
+	if isCrunchyrollHost(parsed.Hostname()) {
+		return youtubeRef{}, fmt.Errorf("use the Download tab for a Crunchyroll URL")
+	}
+	return youtubeRef{Kind: youtubePage}, nil
+}
+
+func isCrunchyrollHost(hostname string) bool {
+	host := strings.TrimPrefix(strings.ToLower(hostname), "www.")
+	return host == "crunchyroll.com" || strings.HasSuffix(host, ".crunchyroll.com")
+}
+
+func isOtherVideoPage(raw string) bool {
+	ref, err := classifyVideoURL(raw)
+	return err == nil && ref.Kind == youtubePage
 }
 
 func isYouTubeHost(raw string) bool {
@@ -188,6 +219,62 @@ func youtubeDownloadArgs(videoID, quality, destination string) ([]string, error)
 	}, nil
 }
 
+func downloadArgsForJob(job youtubeJob, quality string) ([]string, error) {
+	if job.MediaURL != "" {
+		return mediaDownloadArgs(job.MediaURL, job.PageURL, quality, job.Output)
+	}
+	if job.PageURL != "" && !isYouTubeHost(job.PageURL) {
+		return mediaDownloadArgs(job.PageURL, "", quality, job.Output)
+	}
+	if !youtubeVideoIDPattern.MatchString(job.VideoID) {
+		label := strings.TrimSpace(job.Title)
+		if label == "" {
+			label = "this entry"
+		}
+		return nil, fmt.Errorf("no video address for %s", label)
+	}
+	return youtubeDownloadArgs(job.VideoID, quality, job.Output)
+}
+
+func mediaDownloadArgs(target, pageURL, quality, destination string) ([]string, error) {
+	format, err := youtubeFormatSelector(quality)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		"--no-playlist",
+		"--js-runtimes", "deno",
+		"--newline",
+		"-f", format,
+		"--merge-output-format", "mp4",
+		"--remux-video", "mp4",
+	}
+	if pageURL != "" && target != pageURL {
+		args = append(args, "--referer", pageURL)
+	}
+	args = insertCookieArg(args, pageURL)
+	if !strings.Contains(strings.Join(args, "\n"), "--cookies") {
+		args = insertCookieArg(args, target)
+	}
+	return append(args, "-o", destination, target), nil
+}
+
+func insertCookieArg(args []string, raw string) []string {
+	path, ok := existingVideoCookieFile(raw)
+	if !ok {
+		return args
+	}
+	if len(args) == 0 {
+		return []string{"--cookies", path}
+	}
+	last := args[len(args)-1]
+	if strings.Contains(last, "://") {
+		out := append([]string{}, args[:len(args)-1]...)
+		return append(out, "--cookies", path, last)
+	}
+	return append(args, "--cookies", path)
+}
+
 type ytdlpDump struct {
 	ID      string            `json:"id"`
 	Title   string            `json:"title"`
@@ -198,6 +285,8 @@ type ytdlpEntry struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
 	PlaylistIndex int    `json:"playlist_index"`
+	URL           string `json:"url"`
+	WebpageURL    string `json:"webpage_url"`
 }
 
 func parseYouTubeDump(data []byte, kind youtubeKind) (youtubeLookup, error) {
@@ -234,9 +323,10 @@ func parseYouTubeDump(data []byte, kind youtubeKind) (youtubeLookup, error) {
 			index = kept
 		}
 		lookup.Entries = append(lookup.Entries, youtubeEntry{
-			ID:    entry.ID,
-			Title: entry.Title,
-			Index: index,
+			ID:       entry.ID,
+			Title:    entry.Title,
+			Index:    index,
+			MediaURL: nonYouTubeMediaURL(entry.WebpageURL, entry.URL),
 		})
 	}
 	if len(lookup.Entries) == 0 {
@@ -281,9 +371,11 @@ func youtubeJobs(dir string, lookup youtubeLookup, selected []string, quality st
 			name = youtubeIndexLabel(entry.Index, count) + " " + name
 		}
 		jobs = append(jobs, youtubeJob{
-			VideoID: entry.ID,
-			Title:   entry.Title,
-			Output:  filepath.Join(folder, name),
+			VideoID:  entry.ID,
+			Title:    entry.Title,
+			Output:   filepath.Join(folder, name),
+			MediaURL: entry.MediaURL,
+			PageURL:  entry.PageURL,
 		})
 	}
 	if lookup.Kind == youtubePlaylist && len(jobs) == 0 {
@@ -426,7 +518,7 @@ func urlsRequireCrunchyrollAuth(urls []string) bool {
 }
 
 func lookupYouTube(ctx context.Context, raw string, log io.Writer) (youtubeLookup, error) {
-	ref, err := parseYouTubeURL(raw)
+	ref, err := classifyVideoURL(raw)
 	if err != nil {
 		return youtubeLookup{}, err
 	}
@@ -436,18 +528,121 @@ func lookupYouTube(ctx context.Context, raw string, log io.Writer) (youtubeLooku
 	if log == nil {
 		log = io.Discard
 	}
+	if ref.Kind == youtubePage {
+		return lookupVideoPage(ctx, raw, log)
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err = runYTDLP(ctx, youtubeLookupArgs(raw, ref.Kind == youtubePlaylist), &stdout, io.MultiWriter(log, &stderr))
+	args := insertCookieArg(youtubeLookupArgs(raw, ref.Kind == youtubePlaylist), raw)
+	err = runYTDLP(ctx, args, &stdout, io.MultiWriter(log, &stderr))
 	if err != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if detail != "" && !errors.Is(err, errCancelled) {
-			return youtubeLookup{}, fmt.Errorf("%w: %s", err, detail)
+			return youtubeLookup{}, fmt.Errorf("%w: %s", err, loginHint(detail, raw))
 		}
 		return youtubeLookup{}, err
 	}
 	return parseYouTubeDump(stdout.Bytes(), ref.Kind)
+}
+
+func lookupVideoPage(ctx context.Context, raw string, log io.Writer) (youtubeLookup, error) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := insertCookieArg(youtubeLookupArgs(raw, true), raw)
+	err := runYTDLP(ctx, args, &stdout, io.MultiWriter(log, &stderr))
+	detail := strings.TrimSpace(stderr.String())
+	if err != nil {
+		if errors.Is(err, errCancelled) {
+			return youtubeLookup{}, err
+		}
+		if strings.Contains(detail, "Unsupported URL") {
+			if log != nil {
+				fmt.Fprintf(log, "Looking for a video on the page…\n")
+			}
+			found, searchErr := searchPageForVideo(ctx, raw, log)
+			if searchErr != nil {
+				if detail == "" {
+					return youtubeLookup{}, loginHintError(searchErr, raw)
+				}
+				return youtubeLookup{}, loginHintError(fmt.Errorf("%s\n%w", detail, searchErr), raw)
+			}
+			return found, nil
+		}
+		if detail != "" {
+			return youtubeLookup{}, fmt.Errorf("%w: %s", err, loginHint(detail, raw))
+		}
+		return youtubeLookup{}, err
+	}
+
+	kind := ytdlpResultKind(stdout.Bytes())
+	lookup, err := parseYouTubeDump(stdout.Bytes(), kind)
+	if err != nil {
+		return youtubeLookup{}, err
+	}
+	if kind == youtubeVideo {
+		for i := range lookup.Entries {
+			lookup.Entries[i].PageURL = raw
+			lookup.Entries[i].MediaURL = ""
+		}
+	}
+	return lookup, nil
+}
+
+func ytdlpResultKind(data []byte) youtubeKind {
+	var probe struct {
+		Entries json.RawMessage `json:"entries"`
+	}
+	if err := json.Unmarshal(jsonPayload(data), &probe); err != nil {
+		return youtubeVideo
+	}
+	trimmed := bytes.TrimSpace(probe.Entries)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return youtubePlaylist
+	}
+	return youtubeVideo
+}
+
+func nonYouTubeMediaURL(webpage, raw string) string {
+	chosen := absoluteHTTPURL(webpage)
+	if chosen == "" {
+		chosen = absoluteHTTPURL(raw)
+	}
+	if chosen == "" || isYouTubeHost(chosen) {
+		return ""
+	}
+	return chosen
+}
+
+func absoluteHTTPURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.String()
+}
+
+func loginHint(detail, raw string) string {
+	if _, ok := existingVideoCookieFile(raw); ok {
+		return detail
+	}
+	return detail + "\nIf this site requires a login, use Sign in and try again."
+}
+
+func loginHintError(err error, raw string) error {
+	if err == nil || errors.Is(err, errPageVideoEncrypted) {
+		return err
+	}
+	if _, ok := existingVideoCookieFile(raw); ok {
+		return err
+	}
+	if errors.Is(err, errNoPageVideo) || strings.Contains(err.Error(), errNoPageVideo.Error()) {
+		return fmt.Errorf("%w\nIf this site requires a login, use Sign in and try again.", err)
+	}
+	return err
 }
 
 func downloadYouTubeURL(env jobEnv, raw string) error {
@@ -500,13 +695,15 @@ func downloadYouTubeJobs(env jobEnv, jobs []youtubeJob, quality string, onProgre
 			return fmt.Errorf("creating output folder: %w", err)
 		}
 
-		args, err := youtubeDownloadArgs(job.VideoID, quality, job.Output)
-		if err != nil {
-			return err
-		}
 		label := strings.TrimSpace(job.Title)
 		if label == "" {
 			label = job.VideoID
+		}
+		args, err := downloadArgsForJob(job, quality)
+		if err != nil {
+			failed++
+			jobPrintf(env, "Failed: %s: %s\n", label, err)
+			continue
 		}
 		jobPrintf(env, "Downloading %s\nOutput: %s\n", label, job.Output)
 
