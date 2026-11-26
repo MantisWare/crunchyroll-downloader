@@ -12,6 +12,24 @@ bin/
 client_id.bin
 private_key.pem
 
+# Downloaded and local video files
+*.mp4
 *.mkv
+*.webm
+*.mov
+*.avi
+*.m4v
+*.flv
+*.wmv
+*.ts
+*.m4s
+*.mpg
+*.mpeg
+*.vob
+*.ogv
+*.3gp
+*.mp4.part
+*.mkv.part
+*.ytdl
 
-video/*
+video/
