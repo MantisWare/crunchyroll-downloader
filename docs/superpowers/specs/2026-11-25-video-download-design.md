@@ -23,7 +23,7 @@ The AfriForum TV watch link is one of those pages. Its HTML is only the site she
 
 Lookup and download require `yt-dlp`, `deno`, and `ffmpeg` on `PATH`.
 
-`yt-dlp --version` must be 19 August 2026 or newer. Compare the numeric year, month, and day, so `2026.08.19` and `2026.8.19` are the same release. The `2026.07.04` build answers YouTube with HTTP 403, so the app rejects an older build before it calls any site and tells the user to update `yt-dlp`.
+`yt-dlp --version` must be 23 November 2026 or newer. Compare the numeric year, month, and day. Older builds fail YouTube's current player check and report the video as unavailable, so the app rejects them before it calls any site and tells the user to update `yt-dlp`.
 
 Every `yt-dlp` invocation passes `--js-runtimes deno`. When a cookie file exists for the host being contacted, that invocation also passes `--cookies` with that file.
 

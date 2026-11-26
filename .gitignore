@@ -13,3 +13,5 @@ client_id.bin
 private_key.pem
 
 *.mkv
+
+video/*

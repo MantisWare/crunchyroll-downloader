@@ -19,8 +19,8 @@ import (
 
 const (
 	youtubeMinYear  = 2026
-	youtubeMinMonth = 8
-	youtubeMinDay   = 19
+	youtubeMinMonth = 11
+	youtubeMinDay   = 23
 )
 
 type youtubeKind int
@@ -207,7 +207,8 @@ func youtubeDownloadArgs(videoID, quality, destination string) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	return []string{
+	watch := "https://www.youtube.com/watch?v=" + videoID
+	args := []string{
 		"--no-playlist",
 		"--js-runtimes", "deno",
 		"--newline",
@@ -215,8 +216,9 @@ func youtubeDownloadArgs(videoID, quality, destination string) ([]string, error)
 		"--merge-output-format", "mp4",
 		"--remux-video", "mp4",
 		"-o", destination,
-		"https://www.youtube.com/watch?v=" + videoID,
-	}, nil
+		watch,
+	}
+	return insertCookieArg(args, watch), nil
 }
 
 func downloadArgsForJob(job youtubeJob, quality string) ([]string, error) {
@@ -252,11 +254,12 @@ func mediaDownloadArgs(target, pageURL, quality, destination string) ([]string, 
 	if pageURL != "" && target != pageURL {
 		args = append(args, "--referer", pageURL)
 	}
+	args = append(args, "-o", destination, target)
 	args = insertCookieArg(args, pageURL)
 	if !strings.Contains(strings.Join(args, "\n"), "--cookies") {
 		args = insertCookieArg(args, target)
 	}
-	return append(args, "-o", destination, target), nil
+	return args, nil
 }
 
 func insertCookieArg(args []string, raw string) []string {
@@ -264,15 +267,34 @@ func insertCookieArg(args []string, raw string) []string {
 	if !ok {
 		return args
 	}
+	return withCookieFile(args, path)
+}
+
+func withCookieFile(args []string, path string) []string {
+	if path == "" {
+		return args
+	}
 	if len(args) == 0 {
 		return []string{"--cookies", path}
 	}
 	last := args[len(args)-1]
-	if strings.Contains(last, "://") {
+	if strings.Contains(last, "://") && !previousTakesValue(args) {
 		out := append([]string{}, args[:len(args)-1]...)
 		return append(out, "--cookies", path, last)
 	}
 	return append(args, "--cookies", path)
+}
+
+func previousTakesValue(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	switch args[len(args)-2] {
+	case "--referer", "--cookies", "-o", "--output", "-f", "--format", "--js-runtimes", "--merge-output-format", "--remux-video", "--compat-options":
+		return true
+	default:
+		return false
+	}
 }
 
 type ytdlpDump struct {
@@ -481,7 +503,7 @@ func validateYouTubeToolVersion(output string) error {
 		if found == "" {
 			found = "unknown"
 		}
-		return fmt.Errorf("yt-dlp %s is too old; update to 2026.08.19 or newer", found)
+		return fmt.Errorf("yt-dlp %s is too old; update to 2026.11.23 or newer", found)
 	}
 	return nil
 }
@@ -535,11 +557,17 @@ func lookupYouTube(ctx context.Context, raw string, log io.Writer) (youtubeLooku
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	args := insertCookieArg(youtubeLookupArgs(raw, ref.Kind == youtubePlaylist), raw)
-	err = runYTDLP(ctx, args, &stdout, io.MultiWriter(log, &stderr))
+	err = runYTDLP(ctx, args, &stdout, &stderr)
 	if err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail != "" && !errors.Is(err, errCancelled) {
-			return youtubeLookup{}, fmt.Errorf("%w: %s", err, loginHint(detail, raw))
+		if errors.Is(err, errCancelled) {
+			return youtubeLookup{}, err
+		}
+		shown := presentVideoError(strings.TrimSpace(stderr.String()), raw)
+		if shown != "" && log != nil {
+			fmt.Fprintln(log, shown)
+		}
+		if shown != "" {
+			return youtubeLookup{}, fmt.Errorf("%w: %s", err, shown)
 		}
 		return youtubeLookup{}, err
 	}
@@ -550,7 +578,7 @@ func lookupVideoPage(ctx context.Context, raw string, log io.Writer) (youtubeLoo
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	args := insertCookieArg(youtubeLookupArgs(raw, true), raw)
-	err := runYTDLP(ctx, args, &stdout, io.MultiWriter(log, &stderr))
+	err := runYTDLP(ctx, args, &stdout, &stderr)
 	detail := strings.TrimSpace(stderr.String())
 	if err != nil {
 		if errors.Is(err, errCancelled) {
@@ -562,17 +590,20 @@ func lookupVideoPage(ctx context.Context, raw string, log io.Writer) (youtubeLoo
 			}
 			found, searchErr := searchPageForVideo(ctx, raw, log)
 			if searchErr != nil {
-				if detail == "" {
-					return youtubeLookup{}, loginHintError(searchErr, raw)
-				}
-				return youtubeLookup{}, loginHintError(fmt.Errorf("%s\n%w", detail, searchErr), raw)
+				return youtubeLookup{}, loginHintError(searchErr, raw)
 			}
 			return found, nil
 		}
 		if detail != "" {
+			if log != nil {
+				fmt.Fprintln(log, detail)
+			}
 			return youtubeLookup{}, fmt.Errorf("%w: %s", err, loginHint(detail, raw))
 		}
 		return youtubeLookup{}, err
+	}
+	if detail != "" && log != nil {
+		fmt.Fprintln(log, detail)
 	}
 
 	kind := ytdlpResultKind(stdout.Bytes())
@@ -641,11 +672,81 @@ func absoluteHTTPURL(raw string) string {
 	return parsed.String()
 }
 
+func presentVideoError(detail, raw string) string {
+	if youtubePlayerCheckFailed(detail) {
+		return "YouTube's player check failed. Update yt-dlp and try again."
+	}
+	detail = relevantYTDLPDetail(detail)
+	if detail == "" {
+		return ""
+	}
+	if strings.Contains(detail, "confirm your age") {
+		if _, ok := existingVideoCookieFile(raw); ok {
+			return "This video asks you to sign in to confirm your age. The saved YouTube sign-in was not accepted. Use Sign in again, then try again."
+		}
+		return "This video asks you to sign in to confirm your age. Use Sign in, then try again."
+	}
+	return loginHint(detail, raw)
+}
+
+func youtubePlayerCheckFailed(detail string) bool {
+	lower := strings.ToLower(detail)
+	markers := []string{
+		"n challenge solving failed",
+		"error solving n challenge",
+		"nchallengeinput",
+		"addondisposecallback",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func relevantYTDLPDetail(detail string) string {
+	var kept []string
+	for _, line := range strings.Split(detail, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "WARNING:") {
+			continue
+		}
+		if strings.Contains(line, "To suppress this warning") || strings.Contains(line, "installed yt-dlp with pip") || strings.Contains(line, "strongly recommended") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 func loginHint(detail, raw string) string {
+	if !needsSignInHint(detail) {
+		return detail
+	}
 	if _, ok := existingVideoCookieFile(raw); ok {
 		return detail
 	}
 	return detail + "\nIf this site requires a login, use Sign in and try again."
+}
+
+func needsSignInHint(detail string) bool {
+	lower := strings.ToLower(detail)
+	markers := []string{
+		"sign in",
+		"confirm your age",
+		"login required",
+		"private video",
+		"authentication",
+		"cookies-from-browser",
+		"use --cookies",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func loginHintError(err error, raw string) error {

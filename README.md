@@ -36,7 +36,7 @@ Built in Go. A temporary browser is used only for optional account sign-in; down
 | DRM              | gowidevine (Widevine CDM + PSSH extraction)    |
 | Manifest Parsing | go-mpd (DASH MPD)                              |
 | Muxing           | FFmpeg (external, must be installed)            |
-| Video            | yt-dlp 2026.08.19+ and Deno (external)          |
+| Video            | yt-dlp 2026.11.23+ and Deno (external)          |
 | Auth             | Managed browser sign-in or `etp_rt` cookie     |
 | Output           | MKV container with metadata                    |
 
@@ -93,7 +93,7 @@ crunchyroll-downloader/
 - [Go](https://go.dev/dl/) (for building from source)
 - A C compiler for the **desktop UI** (Xcode Command Line Tools on macOS, `gcc`/`libgl` on Linux, MinGW on Windows)
 - [FFmpeg](https://www.ffmpeg.org/download.html#get-packages) (must be in PATH)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) 2026.08.19 or newer, and [Deno](https://deno.com/), for video downloads
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) 2026.11.23 or newer, and [Deno](https://deno.com/), for video downloads
 - A Crunchyroll account (Premium required for Premium-only content)
 - Chrome, Edge, Brave, or Chromium for automatic browser sign-in (manual cookie entry remains available)
 - A Widevine CDM — either a `.wvd` file, or a `client_id.bin` + `private_key.pem` pair
@@ -121,7 +121,7 @@ The CLI binary is output to `bin/crunchyroll-downloader`.
 ./bin/crunchyroll-downloader-gui
 ```
 
-The desktop app has a New tab that opens Download, Video, or Convert.
+The desktop app opens on a New tab. Choose Download, Video, or Convert, and use the tab bar’s add button for another one.
 
 #### Download
 
@@ -144,7 +144,7 @@ The desktop app has a New tab that opens Download, Video, or Convert.
 
 When `yt-dlp` does not know the site, Lookup loads the page and uses the video it finds there. If the page requires an account, click **Sign in**, log in in the browser, then click **Done signing in** and Lookup again. A Crunchyroll link still belongs on the Download tab.
 
-Video downloads do not ask for a Crunchyroll sign-in, audio language, or subtitles. They require `yt-dlp` 2026.08.19 or newer, Deno, and FFmpeg on `PATH`. Page search also needs Chrome, Edge, Brave, or Chromium. The same links work from the CLI with `-url` and `-video-quality`. A video-only command does not need `-etp-rt`.
+Video downloads do not ask for a Crunchyroll sign-in, audio language, or subtitles. They require `yt-dlp` 2026.11.23 or newer, Deno, and FFmpeg on `PATH`. Page search also needs Chrome, Edge, Brave, or Chromium. The same links work from the CLI with `-url` and `-video-quality`. A video-only command does not need `-etp-rt`.
 
 #### Convert
 

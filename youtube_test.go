@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -144,6 +145,47 @@ func TestChoosePageMedia(t *testing.T) {
 	}
 }
 
+func TestChooseEmbeddedEpisode(t *testing.T) {
+	t.Parallel()
+
+	first := "https://cdn.example/bcdn_token=one&expires=1/11111111-1111-1111-1111-111111111111/playlist.m3u8"
+	second := "https://cdn.example/bcdn_token=two&expires=1/22222222-2222-2222-2222-222222222222/playlist.m3u8"
+	candidates := []pageMediaCandidate{
+		{URL: first, Manifest: true},
+		{URL: second, Manifest: true},
+	}
+	embeds := []string{"https://iframe.mediadelivery.net/embed/23748/11111111-1111-1111-1111-111111111111"}
+	chosen, err := selectPageMedia(candidates, embeds)
+	if err != nil || chosen != first {
+		t.Fatalf("selectPageMedia(embed) = %q, %v", chosen, err)
+	}
+	if pageMediaSettled(candidates, nil) {
+		t.Fatal("several playlists settled before the player frame appeared")
+	}
+	if !pageMediaSettled(candidates, embeds) {
+		t.Fatal("player frame did not settle the matching playlist")
+	}
+	if _, err := selectPageMedia(candidates, nil); !errors.Is(err, errManyPageVideos) {
+		t.Fatalf("several playlists error = %v", err)
+	}
+}
+
+func TestExtractMediaURLs(t *testing.T) {
+	t.Parallel()
+
+	body := `{"video":{"url":"https:\/\/cdn.example\/bcdn_token=abc\u0026expires=9\/11111111-1111-1111-1111-111111111111\/playlist.m3u8"}}`
+	urls := extractMediaURLs(body)
+	if len(urls) != 1 || !strings.Contains(urls[0], "11111111-1111-1111-1111-111111111111/playlist.m3u8") || !strings.Contains(urls[0], "bcdn_token=abc&expires=9") {
+		t.Fatalf("extractMediaURLs = %#v", urls)
+	}
+	if !isPlayerEmbed("https://iframe.mediadelivery.net/embed/23748/11111111-1111-1111-1111-111111111111") {
+		t.Fatal("mediadelivery frame was ignored")
+	}
+	if isPlayerEmbed("https://www.googletagmanager.com/ns.html") {
+		t.Fatal("analytics frame was treated as a player")
+	}
+}
+
 func TestManifestBodyEncrypted(t *testing.T) {
 	t.Parallel()
 
@@ -152,6 +194,64 @@ func TestManifestBodyEncrypted(t *testing.T) {
 	}
 	if manifestBodyEncrypted("#EXT-X-KEY:METHOD=AES-128,URI=\"https://example/key\"") {
 		t.Fatal("AES-128 HLS was treated as DRM")
+	}
+}
+
+func TestYouTubeCookiesShareOneFile(t *testing.T) {
+	t.Parallel()
+
+	watch, err := videoCookiePath("https://www.youtube.com/watch?v=cjH3OB0tfQs")
+	if err != nil {
+		t.Fatalf("videoCookiePath(watch) error = %v", err)
+	}
+	short, err := videoCookiePath("https://youtu.be/cjH3OB0tfQs")
+	if err != nil {
+		t.Fatalf("videoCookiePath(short) error = %v", err)
+	}
+	mobile, err := videoCookiePath("https://m.youtube.com/watch?v=cjH3OB0tfQs")
+	if err != nil {
+		t.Fatalf("videoCookiePath(mobile) error = %v", err)
+	}
+	if watch != short || short != mobile || !strings.HasSuffix(watch, "youtube.com.txt") {
+		t.Fatalf("cookie files = %q, %q, %q", watch, short, mobile)
+	}
+}
+
+func TestAgeConfirmationMessage(t *testing.T) {
+	t.Parallel()
+
+	detail := strings.Join([]string{
+		"ERROR: [youtube] cjH3OB0tfQs: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication.",
+		"WARNING: Your yt-dlp version (2026.08.19) is older than 90 days!",
+	}, "\n")
+	got := presentVideoError(detail, "https://www.youtube.com/watch?v=cjH3OB0tfQs")
+	if strings.Contains(got, "cookies-from-browser") || strings.Contains(got, "90 days") {
+		t.Fatalf("presentVideoError() = %q", got)
+	}
+	if !strings.Contains(got, "Use Sign in, then try again.") {
+		t.Fatalf("presentVideoError() = %q", got)
+	}
+}
+
+func TestUnavailableVideoIsNotALoginError(t *testing.T) {
+	t.Parallel()
+
+	detail := strings.Join([]string{
+		"ERROR: [youtube] e2sIUGO825w: This video is not available",
+		"input = NChallengeInput(player_url='https://www.youtube.com/s/player/base.js', challenges=['abc'])",
+		"WARNING: [youtube] e2sIUGO825w: n challenge solving failed: Some formats may be missing.",
+	}, "\n")
+	got := presentVideoError(detail, "https://www.youtube.com/watch?v=e2sIUGO825w")
+	if strings.Contains(got, "Sign in") || strings.Contains(got, "not available") {
+		t.Fatalf("presentVideoError() = %q", got)
+	}
+	if !strings.Contains(got, "Update yt-dlp") {
+		t.Fatalf("presentVideoError() = %q", got)
+	}
+
+	plain := presentVideoError("ERROR: [youtube] e2sIUGO825w: This video is not available", "https://www.youtube.com/watch?v=e2sIUGO825w")
+	if strings.Contains(plain, "Sign in") {
+		t.Fatalf("unavailable video asked for sign-in: %q", plain)
 	}
 }
 
@@ -286,6 +386,43 @@ func TestYouTubeCommandArgs(t *testing.T) {
 	}
 }
 
+func TestMediaDownloadKeepsOneURL(t *testing.T) {
+	t.Parallel()
+
+	page := "https://afriforumtv.co.za/user/watch/f2ef181c-25a0-41ed-9618-191603dcf123?episodeId=58781465-1f2c-40dc-8f6f-bc7925082559"
+	media := "https://cdn.example/bcdn_token=abc&token_path=%2F&expires=1/11111111-1111-1111-1111-111111111111/playlist.m3u8"
+	args, err := mediaDownloadArgs(media, page, "720p", "AfriForumTV [720p].mp4")
+	if err != nil {
+		t.Fatalf("mediaDownloadArgs() error = %v", err)
+	}
+	if got := positionalURLs(args); len(got) != 1 || got[0] != media {
+		t.Fatalf("download URLs = %#v", got)
+	}
+	referer := flagValue(args, "--referer")
+	if referer != page {
+		t.Fatalf("referer = %q", referer)
+	}
+	if cookies := flagValue(args, "--cookies"); cookies != "" {
+		cookieAt := indexOf(args, "--cookies")
+		if cookieAt < 0 || cookieAt+2 >= len(args) || args[cookieAt+2] != media {
+			t.Fatalf("cookies were not placed before the media URL: %q", joinArgs(args))
+		}
+	}
+}
+
+func TestCookieArgDoesNotStealReferer(t *testing.T) {
+	t.Parallel()
+
+	args := withCookieFile([]string{"--referer", "https://example.com/watch"}, "/tmp/cookies.txt")
+	if got, want := joinArgs(args), "--referer https://example.com/watch --cookies /tmp/cookies.txt"; got != want {
+		t.Fatalf("referer cookies = %q", got)
+	}
+	args = withCookieFile([]string{"-o", "out.mp4", "https://cdn.example/playlist.m3u8"}, "/tmp/cookies.txt")
+	if got, want := joinArgs(args), "-o out.mp4 --cookies /tmp/cookies.txt https://cdn.example/playlist.m3u8"; got != want {
+		t.Fatalf("download cookies = %q", got)
+	}
+}
+
 func TestParseYouTubeDump(t *testing.T) {
 	t.Parallel()
 
@@ -402,17 +539,17 @@ func TestYouTubeProgress(t *testing.T) {
 func TestValidateYouTubeToolVersion(t *testing.T) {
 	t.Parallel()
 
-	if err := validateYouTubeToolVersion("2026.08.19"); err != nil {
-		t.Fatalf("August release error = %v", err)
+	if err := validateYouTubeToolVersion("2026.11.23"); err != nil {
+		t.Fatalf("November release error = %v", err)
 	}
-	if err := validateYouTubeToolVersion("2026.8.19\n"); err != nil {
+	if err := validateYouTubeToolVersion("2026.11.23\n"); err != nil {
 		t.Fatalf("unpadded release error = %v", err)
 	}
-	if err := validateYouTubeToolVersion("2026.09.01"); err != nil {
+	if err := validateYouTubeToolVersion("2026.12.01"); err != nil {
 		t.Fatalf("newer release error = %v", err)
 	}
-	if err := validateYouTubeToolVersion("2026.07.04"); err == nil {
-		t.Fatal("July release was accepted")
+	if err := validateYouTubeToolVersion("2026.08.19"); err == nil {
+		t.Fatal("August release was accepted")
 	}
 	if err := validateYouTubeToolVersion("not-a-version"); err == nil {
 		t.Fatal("garbage version was accepted")
@@ -435,6 +572,64 @@ func TestURLsRequireCrunchyrollAuth(t *testing.T) {
 	}
 	if urlsRequireCrunchyrollAuth([]string{"not a url"}) {
 		t.Fatal("junk URL required a cookie")
+	}
+}
+
+func TestSearchPageFindsPlayerPlaylist(t *testing.T) {
+	if os.Getenv("PAGE_SEARCH_LIVE") != "1" {
+		t.Skip("set PAGE_SEARCH_LIVE=1 to search a signed-in page")
+	}
+	lookup, err := searchPageForVideo(t.Context(), "https://afriforumtv.co.za/user/watch/f2ef181c-25a0-41ed-9618-191603dcf123?episodeId=58781465-1f2c-40dc-8f6f-bc7925082559", io.Discard)
+	if err != nil {
+		t.Fatalf("searchPageForVideo error = %v", err)
+	}
+	if len(lookup.Entries) != 1 {
+		t.Fatalf("entries = %d", len(lookup.Entries))
+	}
+	media := lookup.Entries[0].MediaURL
+	if !strings.Contains(media, "7265054a-5d0c-42bb-9ed7-4aaa3c728367/playlist.m3u8") {
+		t.Fatal("page search did not choose this episode's playlist")
+	}
+}
+
+func positionalURLs(args []string) []string {
+	var urls []string
+	for i := 0; i < len(args); i++ {
+		if takesArg(args[i]) {
+			i++
+			continue
+		}
+		if strings.Contains(args[i], "://") {
+			urls = append(urls, args[i])
+		}
+	}
+	return urls
+}
+
+func flagValue(args []string, name string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func indexOf(args []string, want string) int {
+	for i, arg := range args {
+		if arg == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func takesArg(arg string) bool {
+	switch arg {
+	case "--referer", "--cookies", "-o", "--output", "-f", "--format", "--js-runtimes", "--merge-output-format", "--remux-video", "--compat-options":
+		return true
+	default:
+		return false
 	}
 }
 

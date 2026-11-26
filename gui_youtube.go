@@ -550,7 +550,7 @@ func (s *youtubeSession) appendLog(chunk string) {
 	if !s.stillOpen() {
 		return
 	}
-	s.logRaw += chunk
+	s.logRaw = collapseDownloadProgress(s.logRaw + chunk)
 	s.logEntry.SetText(renderLog(s.logRaw))
 }
 

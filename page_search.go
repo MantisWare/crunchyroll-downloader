@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +24,9 @@ const (
 
 var (
 	errNoPageVideo        = errors.New("No video found on this page.")
+	errManyPageVideos     = errors.New("This page has more than one video.")
 	errPageVideoEncrypted = errors.New("This video is encrypted")
+	mediaURLInText        = regexp.MustCompile(`https?://[^\s"'<>\\]{8,1000}\.(?:m3u8|mpd|mp4|webm)`)
 )
 
 type pageMediaCandidate struct {
@@ -62,6 +66,132 @@ func choosePageMedia(candidates []pageMediaCandidate) (string, error) {
 		return file, nil
 	}
 	return "", errNoPageVideo
+}
+
+func choosePageMediaForEmbeds(candidates []pageMediaCandidate, embeds []string) (string, error) {
+	tokens := embedTokens(embeds)
+	if len(tokens) == 0 {
+		return "", errNoPageVideo
+	}
+	matched := make([]pageMediaCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		for _, token := range tokens {
+			if strings.Contains(candidate.URL, token) {
+				matched = append(matched, candidate)
+				break
+			}
+		}
+	}
+	if len(matched) == 0 {
+		return "", errNoPageVideo
+	}
+	return choosePageMedia(matched)
+}
+
+func selectPageMedia(candidates []pageMediaCandidate, embeds []string) (string, error) {
+	if len(embedTokens(embeds)) > 0 {
+		return choosePageMediaForEmbeds(candidates, embeds)
+	}
+	if ambiguousPageMedia(candidates) {
+		return "", errManyPageVideos
+	}
+	return choosePageMedia(candidates)
+}
+
+func pageMediaSettled(candidates []pageMediaCandidate, embeds []string) bool {
+	if len(embedTokens(embeds)) > 0 {
+		_, err := choosePageMediaForEmbeds(candidates, embeds)
+		return err == nil
+	}
+	if ambiguousPageMedia(candidates) {
+		return false
+	}
+	_, err := choosePageMedia(candidates)
+	return err == nil
+}
+
+func ambiguousPageMedia(candidates []pageMediaCandidate) bool {
+	var manifests int
+	var files int
+	for _, candidate := range candidates {
+		if absoluteHTTPURL(candidate.URL) == "" || candidate.FromVideo {
+			continue
+		}
+		if candidate.Manifest {
+			manifests++
+		}
+		if candidate.File {
+			files++
+		}
+	}
+	return manifests > 1 || (manifests == 0 && files > 1)
+}
+
+func embedTokens(embeds []string) []string {
+	var tokens []string
+	seen := map[string]bool{}
+	for _, embed := range embeds {
+		if !isPlayerEmbed(embed) {
+			continue
+		}
+		parsed, err := url.Parse(embed)
+		if err != nil {
+			continue
+		}
+		for _, part := range strings.Split(parsed.EscapedPath(), "/") {
+			if len(part) < 8 || seen[part] {
+				continue
+			}
+			seen[part] = true
+			tokens = append(tokens, part)
+		}
+	}
+	return tokens
+}
+
+func isPlayerEmbed(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.ToLower(parsed.EscapedPath())
+	switch {
+	case strings.Contains(host, "mediadelivery.net") || strings.Contains(host, "b-cdn.net"):
+		return true
+	case strings.Contains(host, "player.vimeo.com") || strings.Contains(host, "wistia") || strings.Contains(host, "cloudflarestream.com"):
+		return true
+	case strings.Contains(path, "/embed/") || strings.HasSuffix(path, "/embed"):
+		return true
+	default:
+		return false
+	}
+}
+
+func extractMediaURLs(body string) []string {
+	normalized := strings.ReplaceAll(body, `\/`, "/")
+	normalized = strings.ReplaceAll(normalized, `\u0026`, "&")
+	normalized = strings.ReplaceAll(normalized, "&amp;", "&")
+	matches := mediaURLInText.FindAllString(normalized, -1)
+	urls := make([]string, 0, len(matches))
+	seen := map[string]bool{}
+	for _, match := range matches {
+		media := strings.TrimRight(match, ".,);]")
+		if seen[media] || absoluteHTTPURL(media) == "" {
+			continue
+		}
+		seen[media] = true
+		urls = append(urls, media)
+	}
+	return urls
+}
+
+func responseMightHoldMedia(mime string, size float64) bool {
+	if size > 2_000_000 {
+		return false
+	}
+	kind := strings.ToLower(strings.TrimSpace(mime))
+	return strings.Contains(kind, "json") || kind == "text/plain"
 }
 
 func requestMediaCandidate(rawURL, mime string) (pageMediaCandidate, bool) {
@@ -119,7 +249,7 @@ func searchPageForVideo(ctx context.Context, pageURL string, log io.Writer) (you
 	}
 	defer os.RemoveAll(profileDir)
 
-	searchCtx, cancel := context.WithTimeout(ctx, pageSearchLimit+5*time.Second)
+	searchCtx, cancel := context.WithTimeout(ctx, pageSearchLimit+20*time.Second)
 	defer cancel()
 	allocatorCtx, cancelAllocator := chromedp.NewExecAllocator(searchCtx, headlessBrowserOptions(executable, profileDir)...)
 	defer cancelAllocator()
@@ -129,19 +259,23 @@ func searchPageForVideo(ctx context.Context, pageURL string, log io.Writer) (you
 	var (
 		mu       sync.Mutex
 		requests []pageMediaCandidate
+		pending  []network.RequestID
 	)
 	chromedp.ListenTarget(browserCtx, func(ev interface{}) {
 		response, ok := ev.(*network.EventResponseReceived)
 		if !ok || response.Response == nil {
 			return
 		}
-		candidate, matched := requestMediaCandidate(response.Response.URL, response.Response.MimeType)
-		if !matched {
-			return
+		if candidate, matched := requestMediaCandidate(response.Response.URL, response.Response.MimeType); matched {
+			mu.Lock()
+			requests = append(requests, candidate)
+			mu.Unlock()
 		}
-		mu.Lock()
-		requests = append(requests, candidate)
-		mu.Unlock()
+		if responseMightHoldMedia(response.Response.MimeType, response.Response.EncodedDataLength) {
+			mu.Lock()
+			pending = append(pending, response.RequestID)
+			mu.Unlock()
+		}
 	})
 
 	actions := []chromedp.Action{network.Enable()}
@@ -155,6 +289,7 @@ func searchPageForVideo(ctx context.Context, pageURL string, log io.Writer) (you
 				continue
 			}
 			actions = append(actions, network.SetCookie(cookie.Name, cookie.Value).
+				WithURL(pageURL).
 				WithDomain(cookie.Domain).
 				WithPath(cookie.Path).
 				WithSecure(cookie.Secure))
@@ -168,31 +303,16 @@ func searchPageForVideo(ctx context.Context, pageURL string, log io.Writer) (you
 		return youtubeLookup{}, fmt.Errorf("opening the page: %w", err)
 	}
 
-	if err := waitForPageMedia(browserCtx, &mu, &requests); err != nil {
+	snapshot, err := watchPageForMedia(browserCtx, &mu, &requests, &pending)
+	if err != nil {
 		return youtubeLookup{}, err
-	}
-
-	var videoURLs []string
-	var title string
-	err = chromedp.Run(browserCtx,
-		chromedp.Evaluate(pageVideoSourceScript, &videoURLs),
-		chromedp.Evaluate(`document.title`, &title),
-	)
-	if err != nil && ctx != nil && ctx.Err() != nil {
-		return youtubeLookup{}, errCancelled
 	}
 
 	mu.Lock()
 	candidates := append([]pageMediaCandidate{}, requests...)
 	mu.Unlock()
-	for _, videoURL := range videoURLs {
-		if absoluteHTTPURL(videoURL) == "" {
-			continue
-		}
-		candidates = append(candidates, pageMediaCandidate{URL: videoURL, FromVideo: true})
-	}
 
-	chosen, err := choosePageMedia(candidates)
+	chosen, err := selectPageMedia(candidates, snapshot.Embeds)
 	if err != nil {
 		return youtubeLookup{}, err
 	}
@@ -210,7 +330,7 @@ func searchPageForVideo(ctx context.Context, pageURL string, log io.Writer) (you
 	if hostErr != nil {
 		return youtubeLookup{}, hostErr
 	}
-	title = strings.TrimSpace(title)
+	title := strings.TrimSpace(snapshot.Title)
 	if title == "" {
 		title = host
 	}
@@ -230,52 +350,135 @@ func searchPageForVideo(ctx context.Context, pageURL string, log io.Writer) (you
 	}, nil
 }
 
-const pageVideoSourceScript = `(() => {
-  const urls = [];
+const pageSnapshotScript = `(() => {
+  const videos = [];
+  const embeds = [];
   for (const video of document.querySelectorAll("video")) {
-    if (video.currentSrc) urls.push(video.currentSrc);
-    if (video.src) urls.push(video.src);
+    if (video.currentSrc) videos.push(video.currentSrc);
+    if (video.src) videos.push(video.src);
     for (const source of video.querySelectorAll("source")) {
-      if (source.src) urls.push(source.src);
+      if (source.src) videos.push(source.src);
     }
   }
-  return urls;
+  for (const frame of document.querySelectorAll("iframe")) {
+    const src = frame.src || "";
+    if (src.indexOf("http://") === 0 || src.indexOf("https://") === 0) embeds.push(src);
+  }
+  return {videos: videos, embeds: embeds, title: document.title || ""};
 })()`
 
-func waitForPageMedia(ctx context.Context, mu *sync.Mutex, requests *[]pageMediaCandidate) error {
+type pageSnapshot struct {
+	Videos []string `json:"videos"`
+	Embeds []string `json:"embeds"`
+	Title  string   `json:"title"`
+}
+
+func watchPageForMedia(ctx context.Context, mu *sync.Mutex, requests *[]pageMediaCandidate, pending *[]network.RequestID) (pageSnapshot, error) {
 	deadline := time.Now().Add(pageSearchLimit)
-	var lastCount int
 	var quietSince time.Time
+	var snapshot pageSnapshot
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		if ctx.Err() != nil {
-			return errCancelled
+			return pageSnapshot{}, errCancelled
 		}
+		absorbResponseBodies(ctx, mu, requests, pending)
+		next, evalErr := readPageSnapshot(ctx)
+		if evalErr != nil {
+			if ctx.Err() != nil {
+				return pageSnapshot{}, errCancelled
+			}
+		} else {
+			snapshot = next
+			rememberVideoSources(mu, requests, snapshot.Videos)
+		}
+
 		mu.Lock()
-		count := len(*requests)
+		candidates := append([]pageMediaCandidate{}, *requests...)
 		mu.Unlock()
-		if count > 0 && count == lastCount {
+		if pageMediaSettled(candidates, snapshot.Embeds) {
 			if quietSince.IsZero() {
 				quietSince = time.Now()
 			}
 			if time.Since(quietSince) >= pageSearchQuiet {
-				return nil
+				return snapshot, nil
 			}
 		} else {
 			quietSince = time.Time{}
-			lastCount = count
 		}
 		if time.Now().After(deadline) {
-			return nil
+			return snapshot, nil
 		}
 		select {
 		case <-ctx.Done():
-			return errCancelled
+			return pageSnapshot{}, errCancelled
 		case <-ticker.C:
 		}
 	}
+}
+
+func readPageSnapshot(ctx context.Context) (pageSnapshot, error) {
+	var snapshot pageSnapshot
+	err := chromedp.Run(ctx, chromedp.Evaluate(pageSnapshotScript, &snapshot))
+	return snapshot, err
+}
+
+func absorbResponseBodies(ctx context.Context, mu *sync.Mutex, requests *[]pageMediaCandidate, pending *[]network.RequestID) {
+	mu.Lock()
+	ids := append([]network.RequestID{}, *pending...)
+	*pending = nil
+	mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+
+	found := make([]pageMediaCandidate, 0)
+	for _, id := range ids {
+		var body []byte
+		err := chromedp.Run(ctx, chromedp.ActionFunc(func(actionCtx context.Context) error {
+			var bodyErr error
+			body, bodyErr = network.GetResponseBody(id).Do(actionCtx)
+			return bodyErr
+		}))
+		if err != nil || len(body) == 0 {
+			continue
+		}
+		for _, media := range extractMediaURLs(string(body)) {
+			candidate, ok := requestMediaCandidate(media, "")
+			if !ok {
+				continue
+			}
+			found = append(found, candidate)
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+	mu.Lock()
+	*requests = append(*requests, found...)
+	mu.Unlock()
+}
+
+func rememberVideoSources(mu *sync.Mutex, requests *[]pageMediaCandidate, videos []string) {
+	fresh := make([]pageMediaCandidate, 0, len(videos))
+	for _, videoURL := range videos {
+		if absoluteHTTPURL(videoURL) == "" {
+			continue
+		}
+		fresh = append(fresh, pageMediaCandidate{URL: videoURL, FromVideo: true})
+	}
+	mu.Lock()
+	kept := make([]pageMediaCandidate, 0, len(*requests))
+	for _, candidate := range *requests {
+		if candidate.FromVideo {
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	*requests = append(kept, fresh...)
+	mu.Unlock()
 }
 
 func isManifestURL(raw string) bool {

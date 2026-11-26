@@ -66,6 +66,13 @@ type guiApp struct {
 	browserLoginMu     sync.Mutex
 	browserLoginCancel func()
 
+	ytdlpLabel  *widget.Label
+	ytdlpCheck  *widget.Button
+	ytdlpUpdate *widget.Button
+	ytdlpMu     sync.Mutex
+	ytdlpBusy   bool
+	ytdlpLatest string
+
 	downloadSeq int
 	convertSeq  int
 	youtubeSeq  int
@@ -112,6 +119,7 @@ func main() {
 	g.buildAccount(cfg)
 	g.win.SetContent(g.layout())
 	g.ignoreSelect = false
+	go g.checkYTDLP()
 
 	g.win.SetCloseIntercept(func() {
 		g.rememberWindowSize()
@@ -152,7 +160,7 @@ func (g *guiApp) layout() fyne.CanvasObject {
 		),
 		g.accountStatus,
 	)
-	return container.NewBorder(container.NewPadded(header), nil, nil, nil, g.buildTabs())
+	return container.NewBorder(container.NewPadded(container.NewVBox(header, g.ytdlpRow())), nil, nil, nil, g.buildTabs())
 }
 
 func (g *guiApp) persistSettings() {

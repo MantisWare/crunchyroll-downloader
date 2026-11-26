@@ -51,7 +51,7 @@ SETUP
      Must be installed and available in your PATH.
      https://www.ffmpeg.org/download.html
 
-  4. Video downloads also need yt-dlp 2026.08.19 or newer, and Deno, on PATH.
+  4. Video downloads also need yt-dlp 2026.11.23 or newer, and Deno, on PATH.
      A video page does not use the Crunchyroll cookie. Sign in from the Video tab when a site asks for an account.
 
 EXAMPLES

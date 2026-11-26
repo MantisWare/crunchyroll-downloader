@@ -3,6 +3,7 @@
 package main
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -28,7 +29,7 @@ func (s *downloadSession) appendLog(chunk string) {
 	if !s.stillOpen() {
 		return
 	}
-	s.logRaw += chunk
+	s.logRaw = collapseDownloadProgress(s.logRaw + chunk)
 	s.logEntry.SetText(renderLog(s.logRaw))
 	s.noteLogProgress(chunk)
 }
@@ -53,6 +54,52 @@ func renderLog(raw string) string {
 	lines := strings.Split(text, "\n")
 	slices.Reverse(lines)
 	return strings.Join(lines, "\n")
+}
+
+var downloadPercentLine = regexp.MustCompile(`^\[download\]\s+[0-9]+(?:\.[0-9]+)?%`)
+
+// collapseDownloadProgress keeps the latest yt-dlp percent line in a run.
+// Each update used to stay in the log, and redrawing that growing history
+// stalled the download between segments.
+func collapseDownloadProgress(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	body := raw
+	tail := ""
+	if !strings.HasSuffix(raw, "\n") {
+		split := strings.LastIndex(raw, "\n")
+		if split < 0 {
+			return raw
+		}
+		body = raw[:split+1]
+		tail = raw[split+1:]
+	}
+
+	lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
+	built := make([]string, 0, len(lines))
+	held := ""
+	holding := false
+	for _, line := range lines {
+		if downloadPercentLine.MatchString(line) {
+			held = line
+			holding = true
+			continue
+		}
+		if holding {
+			built = append(built, held)
+			holding = false
+		}
+		built = append(built, line)
+	}
+	if holding {
+		built = append(built, held)
+	}
+	out := strings.Join(built, "\n")
+	if strings.HasSuffix(body, "\n") {
+		out += "\n"
+	}
+	return out + tail
 }
 
 func normalizeCarriageReturns(s string) string {

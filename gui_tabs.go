@@ -40,9 +40,7 @@ func (c *chooserSession) runState() tabRunState       { return tabIdle }
 func (c *chooserSession) title() string               { return "New" }
 
 func (g *guiApp) buildTabs() *container.DocTabs {
-	download := g.newDownloadTab()
-	convert := g.newConvertTab()
-	tabs := container.NewDocTabs(download, convert)
+	tabs := container.NewDocTabs(g.newChooserTab())
 	tabs.CreateTab = func() *container.TabItem {
 		return g.newChooserTab()
 	}
@@ -233,7 +231,7 @@ func (g *guiApp) ensureTabExists() {
 	if len(g.tabs.Items) > 0 {
 		return
 	}
-	g.tabs.Append(g.newDownloadTab())
+	g.tabs.Append(g.newChooserTab())
 }
 
 func (g *guiApp) selectedConvert() (*convertSession, bool) {

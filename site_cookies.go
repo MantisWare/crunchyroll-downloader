@@ -21,8 +21,21 @@ func videoCookieHost(raw string) (string, error) {
 	return strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www."), nil
 }
 
-func videoCookiePath(raw string) (string, error) {
+func cookieStorageHost(raw string) (string, error) {
 	host, err := videoCookieHost(raw)
+	if err != nil {
+		return "", err
+	}
+	switch host {
+	case "youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be":
+		return "youtube.com", nil
+	default:
+		return host, nil
+	}
+}
+
+func videoCookiePath(raw string) (string, error) {
+	host, err := cookieStorageHost(raw)
 	if err != nil {
 		return "", err
 	}
@@ -51,10 +64,16 @@ func writeVideoCookies(raw string, cookies []*network.Cookie) error {
 		return err
 	}
 	lines := make([]string, 0, len(cookies))
+	seen := map[string]bool{}
 	for _, cookie := range cookies {
 		if cookie == nil || cookie.Name == "" {
 			continue
 		}
+		key := cookie.Domain + "\t" + cookie.Path + "\t" + cookie.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		lines = append(lines, netscapeCookieLine(cookie))
 	}
 	if len(lines) == 0 {
@@ -180,10 +199,14 @@ func visibleBrowserOptions(executable, profileDir string) []chromedp.ExecAllocat
 }
 
 func readBrowserCookies(ctx context.Context, pageURL string) ([]*network.Cookie, error) {
+	urls := []string{pageURL}
+	if isYouTubeHost(pageURL) {
+		urls = append(urls, "https://www.youtube.com/")
+	}
 	var cookies []*network.Cookie
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(actionCtx context.Context) error {
 		var cookieErr error
-		cookies, cookieErr = network.GetCookies().WithUrls([]string{pageURL}).Do(actionCtx)
+		cookies, cookieErr = network.GetCookies().WithUrls(urls).Do(actionCtx)
 		return cookieErr
 	}))
 	if err != nil {
